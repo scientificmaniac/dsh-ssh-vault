@@ -14,7 +14,7 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
-import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, probeCommand, runRemote, shellKind, transferFile } from './lib/ssh.js'
+import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, parseExitStatus, probeCommand, runRemote, shellKind, transferFile } from './lib/ssh.js'
 import { API_PREFIX, createVaultApi } from './lib/vault-api.js'
 import { Vault, defaultVaultDir, maskHost, maskUser } from './lib/vault.js'
 
@@ -33,7 +33,7 @@ const DEFAULT_MAX_OUTPUT = 200000
  * @param options - 工具名、描述、参数与执行函数。
  * @returns 可直接注册的工具定义。
  */
-function textTool({ name: toolName, description, parameters, execute }) {
+function textTool({ name: toolName, description, parameters, execute, presentCall, presentResult }) {
   return {
     name: toolName,
     description,
@@ -43,7 +43,35 @@ function textTool({ name: toolName, description, parameters, execute }) {
       render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : String(value) }],
     },
     execute,
+    ...(presentCall !== undefined ? { presentCall } : {}),
+    ...(presentResult !== undefined ? { presentResult } : {}),
   }
+}
+
+/**
+ * 把一个工具的文本结果渲染成对话里的终端卡片。
+ *
+ * 用的是内置 shell 工具同一种卡片，所以在对话里呈现为「命令行 + 输出 + 退出码状态」。
+ * 形状不符时返回 `undefined`，交回通用渲染。
+ *
+ * @param result - 工具结果，`content` 为展示块。
+ * @returns 终端卡片视图，或 `undefined`。
+ */
+function terminalResult(result) {
+  const block = Array.isArray(result?.content) && result.content.length === 1 ? result.content[0] : undefined
+  if (block === undefined || block.type !== 'text') return undefined
+  const { body, ...exit } = parseExitStatus(block.text)
+  return { card: 'terminal', output: body, ...exit }
+}
+
+/**
+ * 一次 SSH 调用的调用中卡片：标题是命令行本身，副标题标明走的是哪台主机。
+ * @param args - 工具参数。
+ * @param label - 用于副标题的动作前缀。
+ * @returns 终端卡片视图。
+ */
+function terminalCall(title, host) {
+  return { card: 'terminal', title, description: `ssh ${host ?? ''}` }
 }
 
 /**
@@ -493,6 +521,8 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register(textTool({
     name: 'ssh_run',
+    presentCall: (args) => terminalCall(args.command, args.host),
+    presentResult: (_args, result) => terminalResult(result),
     description: 'Run a shell command on a saved SSH host and return its stdout and stderr. '
       + 'The command runs through the remote shell named in the host record (bash by default, cmd or powershell for '
       + 'Windows targets). The connection address, account, and password come from the encrypted vault, so refer to the '
@@ -649,6 +679,11 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register(textTool({
     name: 'ssh_transfer',
+    presentCall: (args) => terminalCall(
+      `scp ${args.direction === 'upload' ? `${args.local} → ${args.remote}` : `${args.remote} → ${args.local}`}`,
+      args.host,
+    ),
+    presentResult: (_args, result) => terminalResult(result),
     description: 'Copy files between this machine and a saved SSH host over SCP. '
       + 'Relative local paths resolve against the session working directory. The host is addressed by vault alias, '
       + 'and the connection address, account, and password come from the encrypted vault.',
@@ -717,6 +752,8 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register(textTool({
     name: 'ssh_probe',
+    presentCall: (args) => terminalCall(`ssh_probe ${args.host}`, args.host),
+    presentResult: (_args, result) => terminalResult(result),
     description: 'Check that a saved SSH host is reachable and report what the remote system is. '
       + 'It adapts to the host record\'s shell, so it works for both Linux and Windows targets. '
       + 'Use it before the first real command on a host, or when a command fails in a way that suggests connectivity or authentication problems.',

@@ -6,7 +6,7 @@
  *
  * 运行：node test/unit.mjs
  */
-import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, runProcess, sudoPrelude } from '../lib/ssh.js'
+import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, parseExitStatus, runProcess, sudoPrelude } from '../lib/ssh.js'
 
 let passed = 0
 const failures = []
@@ -166,6 +166,26 @@ check('detach 重定向输出到日志', detachScript.includes('> "$DSH_LOG" 2>&
 check('detach 写 pid 文件', detachScript.includes('echo $! > "$DSH_PID"'), detachScript)
 check('detach 安全引用命令', detachScript.includes("'apt -y full-upgrade'"), detachScript)
 check('detach 告知存活查询方式', detachScript.includes('ALIVE'), detachScript)
+
+// —— 对话里的终端卡片：从展示文本中取出退出状态 ——
+{
+  check('没有状态标记时退出码为 0', parseExitStatus('just output').exitCode === 0)
+
+  const ok = parseExitStatus('hello\nworld\n[exit code: 0]')
+  check('取出零退出码', ok.exitCode === 0, JSON.stringify(ok))
+  check('正文不含状态标记', ok.body === 'hello\nworld', JSON.stringify(ok.body))
+  check('取出非零退出码', parseExitStatus('boom\n[exit code: 255]').exitCode === 255)
+
+  // 我们的渲染在退出码之后还会跟诊断建议，所以匹配不能要求它位于全文末尾——
+  // 这与内置 shell 工具的实现有意不同。
+  const withNotes = parseExitStatus('out\n[exit code: 3]\n提示：检查 known_hosts')
+  check('退出码后仍有建议时也能取出', withNotes.exitCode === 3, JSON.stringify(withNotes))
+  check('建议文本被保留', withNotes.body.includes('检查 known_hosts'), JSON.stringify(withNotes))
+
+  const killed = parseExitStatus('partial\n[killed by signal: SIGKILL]')
+  check('识别终止信号', killed.signal === 'SIGKILL' && killed.exitCode === undefined, JSON.stringify(killed))
+  check('终止信号标记被移除', !killed.body.includes('killed by signal'), JSON.stringify(killed.body))
+}
 
 console.log(`${passed} 项通过，${failures.length} 项失败`)
 for (const note of skipped) console.log(`SKIP: ${note}`)
