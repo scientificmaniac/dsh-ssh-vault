@@ -187,6 +187,7 @@ window.__ModuleLoader__.load({
       },
       danger: { borderColor: C.bad, color: C.bad },
       card: { border: `0.5px solid ${C.borderSubtle}`, borderRadius: C.radiusMd, background: C.surface, padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' },
+      hostBlock: { display: 'flex', flexDirection: 'column', gap: '8px' },
       cardHead: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
       alias: { fontWeight: 600, fontSize: '13px' },
       badge: { border: `0.5px solid ${C.border}`, borderRadius: '999px', padding: '1px 8px', fontSize: '11px', color: C.textDim },
@@ -501,44 +502,55 @@ window.__ModuleLoader__.load({
           onClick: () => setForm({ mode: 'new', record: null }),
         }, t('add')))
 
+      // 「添加」的表单出现在顶部；「编辑」的表单在**对应卡片下方**就地展开——
+      // 表单原先渲染在列表之前，点编辑时会把视线和滚动位置一起拉到页面顶端。
+      const formHandlers = {
+        onDone: async () => { setForm(null); await load() },
+        onCancel: () => setForm(null),
+      }
+      const isEditing = (host) => form !== null && form.mode === 'edit' && form.record !== null && form.record.alias === host.alias
+
       return h('div', { className: SCOPE, style: S.page },
         h('style', { key: 'scope-style' }, CSS),
         header,
         state.error.length > 0 ? h('div', { style: S.error }, state.error) : null,
-        form !== null ? h(HostForm, {
-          record: form.record,
-          onDone: async () => { setForm(null); await load() },
-          onCancel: () => setForm(null),
-        }) : null,
+        form !== null && form.mode === 'new'
+          ? h(HostForm, { key: 'new-form', record: null, ...formHandlers })
+          : null,
         state.status === 'loading'
           ? h('div', { style: { color: C.textDim } }, t('loading'))
           : state.hosts.length === 0 && form === null
             ? h('div', { style: { color: C.textDim } }, t('empty'))
             : state.hosts.map((host) => {
               const test = tests[host.alias]
-              return h('div', { key: host.alias, style: S.card },
-                h('div', { style: S.cardHead },
-                  h('span', { style: S.alias }, host.alias),
-                  ...authBadges(host).map((badge, index) => h('span', { key: index, style: S.badge }, badge)),
-                  host.updatedAt ? h('span', { style: { ...S.badge, borderColor: 'transparent' } }, `${t('updatedAt')} ${String(host.updatedAt).slice(0, 19).replace('T', ' ')}`) : null),
-                h('div', { style: S.kv },
-                  h('span', null, `${host.host}:${host.port}`),
-                  h('span', null, host.username),
-                  h('span', null, 'shell'),
-                  h('span', null, host.shell),
-                  ...(host.description ? [h('span', null, t('description')), h('span', null, host.description)] : []),
-                  ...(host.tags.length > 0 ? [h('span', null, t('tags')), h('span', null, host.tags.join(', '))] : [])),
-                h('div', { style: S.row },
-                  h('button', { style: S.button, disabled: test && test.status === 'running', onClick: () => runTest(host.alias) },
-                    test && test.status === 'running' ? t('testing') : t('test')),
-                  h('button', { style: S.button, onClick: () => setForm({ mode: 'edit', record: host }) }, t('edit')),
-                  h('button', { style: { ...S.button, ...S.danger }, onClick: () => removeHost(host.alias) }, t('remove'))),
-                test && test.status !== 'running'
-                  ? h('div', null,
-                    h('div', { style: test.status === 'ok' ? S.okText : S.badText }, test.status === 'ok' ? t('testOk') : t('testFail')),
-                    test.detail ? h('pre', { style: S.pre }, test.detail) : null,
-                    test.notes && test.notes.length > 0 ? h('pre', { style: S.pre }, test.notes.join('\n')) : null)
-                  : null)
+              return h('div', { key: host.alias, style: S.hostBlock },
+                h('div', { style: S.card },
+                  h('div', { style: S.cardHead },
+                    h('span', { style: S.alias }, host.alias),
+                    ...authBadges(host).map((badge, index) => h('span', { key: index, style: S.badge }, badge)),
+                    host.updatedAt ? h('span', { style: { ...S.badge, borderColor: 'transparent' } }, `${t('updatedAt')} ${String(host.updatedAt).slice(0, 19).replace('T', ' ')}`) : null),
+                  h('div', { style: S.kv },
+                    h('span', null, `${host.host}:${host.port}`),
+                    h('span', null, host.username),
+                    h('span', null, 'shell'),
+                    h('span', null, host.shell),
+                    ...(host.description ? [h('span', null, t('description')), h('span', null, host.description)] : []),
+                    ...(host.tags.length > 0 ? [h('span', null, t('tags')), h('span', null, host.tags.join(', '))] : [])),
+                  h('div', { style: S.row },
+                    h('button', { style: S.button, disabled: test && test.status === 'running', onClick: () => runTest(host.alias) },
+                      test && test.status === 'running' ? t('testing') : t('test')),
+                    h('button', {
+                      style: S.button,
+                      onClick: () => setForm(isEditing(host) ? null : { mode: 'edit', record: host }),
+                    }, isEditing(host) ? t('cancel') : t('edit')),
+                    h('button', { style: { ...S.button, ...S.danger }, onClick: () => removeHost(host.alias) }, t('remove'))),
+                  test && test.status !== 'running'
+                    ? h('div', null,
+                      h('div', { style: test.status === 'ok' ? S.okText : S.badText }, test.status === 'ok' ? t('testOk') : t('testFail')),
+                      test.detail ? h('pre', { style: S.pre }, test.detail) : null,
+                      test.notes && test.notes.length > 0 ? h('pre', { style: S.pre }, test.notes.join('\n')) : null)
+                    : null),
+                isEditing(host) ? h(HostForm, { record: host, ...formHandlers }) : null)
             }))
     }
 
