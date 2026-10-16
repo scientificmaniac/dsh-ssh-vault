@@ -54,6 +54,11 @@ window.__ModuleLoader__.load({
         saved: '已保存',
         errorRequired: '请填写必填项。',
         transportError: '无法连接到宿主：路由不可用。',
+        routeMissing: '宿主没有注册设置接口：插件文件已更新，但宿主进程仍在运行旧代码。请重启 DSH Desktop。',
+        notAuthorized: '请求被宿主拒绝（未认证）。请刷新页面后重试。',
+        chooseFile: '选择文件',
+        noFileChosen: '未选择任何文件',
+        usernameKeyHint: '密钥认证同样需要账号——SSH 连接的是 user@host。',
         passwordBadge: '已存密码',
         noPasswordBadge: '无密码',
         sudoBadge: 'sudo 口令',
@@ -100,6 +105,11 @@ window.__ModuleLoader__.load({
         saved: 'Saved',
         errorRequired: 'Fill in the required fields.',
         transportError: 'Cannot reach the host: route unavailable.',
+        routeMissing: 'The host has no settings route: the plugin files are updated but the host process is still running the old code. Restart DSH Desktop.',
+        notAuthorized: 'The host rejected the request (not authenticated). Refresh the page and try again.',
+        chooseFile: 'Choose file',
+        noFileChosen: 'No file chosen',
+        usernameKeyHint: 'Key authentication still needs the account — SSH connects as user@host.',
         passwordBadge: 'password stored',
         noPasswordBadge: 'no password',
         sudoBadge: 'sudo password',
@@ -215,6 +225,11 @@ window.__ModuleLoader__.load({
       } catch {
         return { ok: false, error: t('transportError') }
       }
+      // 404 与 401/403 的含义完全不同：前者是宿主根本没注册路由（进程跑的还是旧代码），
+      // 后者只是这次请求没被信任。混成一句话会把排查引向错误方向。
+      if (response.status === 404) return { ok: false, error: t('routeMissing') }
+      if (response.status === 401 || response.status === 403) return { ok: false, error: t('notAuthorized') }
+      if (!response.ok) return { ok: false, error: `${t('transportError')} (HTTP ${response.status})` }
       try {
         const envelope = await response.json()
         if (envelope && envelope.ok === true) return { ok: true, value: envelope.value }
@@ -341,7 +356,7 @@ window.__ModuleLoader__.load({
             h('input', { style: S.input, value: host, placeholder: '192.0.2.10', onChange: (e) => setHost(e.target.value) })),
           h(Field, { label: t('port') },
             h('input', { style: S.input, value: port, inputMode: 'numeric', onChange: (e) => setPort(e.target.value) })),
-          h(Field, { label: t('username') },
+          h(Field, { label: t('username'), hint: authType === 'key' ? t('usernameKeyHint') : undefined },
             h('input', { style: S.input, value: username, onChange: (e) => setUsername(e.target.value) }))),
 
         h('div', { style: S.row },
@@ -358,12 +373,16 @@ window.__ModuleLoader__.load({
             h('input', { style: S.input, type: 'password', value: password, autoComplete: 'new-password', onChange: (e) => setPassword(e.target.value) }))
           : h('div', { style: S.fields },
             h(Field, { label: t('keyUpload'), hint: t('keyUploadHint') },
-              h('input', {
-                style: S.input,
-                type: 'file',
-                onChange: (e) => setKeyFile(e.target.files && e.target.files[0] ? e.target.files[0] : null),
-              }),
-              keyFile ? h('span', { style: S.hint }, `${t('keyUploaded')}: ${keyFile.name}`) : null),
+              // 原生 file input 自带边框与内边距，塞进 28px 的输入框里就会像截图那样错位。
+              // 隐藏它、用自己的按钮当触发器，高度与圆角便与其它控件一致。
+              h('label', { style: { ...S.button, alignSelf: 'flex-start' } },
+                t('chooseFile'),
+                h('input', {
+                  type: 'file',
+                  style: { display: 'none' },
+                  onChange: (e) => setKeyFile(e.target.files && e.target.files[0] ? e.target.files[0] : null),
+                })),
+              h('span', { style: S.hint }, keyFile ? `${t('keyUploaded')}: ${keyFile.name}` : t('noFileChosen'))),
             h(Field, { label: t('keyPath') },
               h('input', { style: S.input, value: keyPath, placeholder: 'C:\\keys\\id_rsa', onChange: (e) => setKeyPath(e.target.value) }))),
 
@@ -433,7 +452,7 @@ window.__ModuleLoader__.load({
         h('div', null,
           h('h3', { style: S.h }, t('heading')),
           h('p', { style: S.intro }, t('intro')),
-          state.status === 'ready'
+          state.status === 'ready' && state.error.length === 0
             ? h('div', { style: S.meta }, [
               `dsh-ssh-vault v${state.version}`,
               `${t('keyMode')}: ${state.keyMode}`,
