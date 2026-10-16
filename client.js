@@ -112,18 +112,21 @@ window.__ModuleLoader__.load({
     const LANG = String((typeof navigator !== 'undefined' && navigator.language) || 'zh').toLowerCase().startsWith('zh') ? 'zh' : 'en'
     const t = (key) => DICT[LANG][key] ?? DICT.zh[key] ?? key
 
-    // —— 主题 token：全部带回退值，token 改名只会让外观降级，不会破坏渲染 ——
+    // —— 配色：只让**文字与边框**依赖主题 token，表面色一律用中性半透明 ——
+    //
+    // 曾经用 `--dsw-alias-bg-layer-1` 做按钮底色，结果在深色主题下按钮是浅底 + 浅字，
+    // 什么都看不见：该 token 的语义是「升起的表面」，并不保证在深色下是暗色。
+    // 中性半透明（rgba(127,127,127,α)）在明暗两种主题下都成立，也不会与文字色撞车。
     const C = {
-      text: 'var(--dsw-alias-label-primary, inherit)',
-      textDim: 'var(--dsw-alias-label-secondary, rgba(128,128,128,0.9))',
-      border: 'var(--dsw-alias-border-l1, rgba(128,128,128,0.25))',
-      borderStrong: 'var(--dsw-alias-border-l2, rgba(128,128,128,0.4))',
-      layer: 'var(--dsw-alias-bg-layer-1, transparent)',
-      layer2: 'var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.08))',
+      text: 'var(--dsw-alias-label-primary, currentColor)',
+      textDim: 'var(--dsw-alias-label-secondary, currentColor)',
+      border: 'var(--dsw-alias-border-l1, rgba(127,127,127,0.30))',
+      borderStrong: 'var(--dsw-alias-border-l2, rgba(127,127,127,0.48))',
+      surface: 'rgba(127,127,127,0.08)',
+      surfaceStrong: 'rgba(127,127,127,0.14)',
       brand: 'var(--dsw-alias-brand-primary, #4f7cff)',
       ok: 'var(--dsw-alias-state-success-primary, #2e9e5b)',
       bad: 'var(--dsw-alias-state-error-primary, #d64545)',
-      warn: 'var(--dsw-alias-state-warn-primary, #c98a12)',
     }
 
     const S = {
@@ -133,23 +136,24 @@ window.__ModuleLoader__.load({
       intro: { margin: '4px 0 0', color: C.textDim, maxWidth: '62ch' },
       meta: { marginTop: '6px', color: C.textDim, fontSize: '12px' },
       button: {
-        appearance: 'none', border: `1px solid ${C.borderStrong}`, background: C.layer, color: C.text,
-        borderRadius: '6px', padding: '5px 11px', fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap',
+        // 透明底 + 边框：既覆盖浏览器给 button 的默认浅色底，也不依赖任何表面 token。
+        appearance: 'none', border: `1px solid ${C.borderStrong}`, background: 'transparent', color: C.text,
+        borderRadius: '6px', padding: '5px 11px', fontSize: '12px', font: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap',
       },
-      primary: { borderColor: C.brand, color: '#fff', background: C.brand },
+      primary: { borderColor: C.brand, background: C.brand, color: '#ffffff' },
       danger: { borderColor: C.bad, color: C.bad },
-      card: { border: `1px solid ${C.border}`, borderRadius: '8px', background: C.layer, padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' },
+      card: { border: `1px solid ${C.border}`, borderRadius: '8px', background: C.surface, padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' },
       cardHead: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
       alias: { fontWeight: 600, fontSize: '13px' },
       badge: { border: `1px solid ${C.border}`, borderRadius: '999px', padding: '1px 8px', fontSize: '11px', color: C.textDim },
       kv: { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', color: C.textDim, fontSize: '12px' },
       row: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' },
-      form: { border: `1px solid ${C.borderStrong}`, borderRadius: '8px', background: C.layer2, padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' },
+      form: { border: `1px solid ${C.borderStrong}`, borderRadius: '8px', background: C.surfaceStrong, padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' },
       fields: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '10px' },
       field: { display: 'flex', flexDirection: 'column', gap: '3px' },
       label: { fontSize: '12px', color: C.textDim },
       input: {
-        border: `1px solid ${C.border}`, borderRadius: '6px', background: C.layer, color: C.text,
+        border: `1px solid ${C.border}`, borderRadius: '6px', background: C.surface, color: C.text,
         padding: '5px 8px', fontSize: '12px', font: 'inherit', width: '100%', boxSizing: 'border-box',
       },
       hint: { fontSize: '11px', color: C.textDim },
@@ -157,10 +161,21 @@ window.__ModuleLoader__.load({
       okText: { color: C.ok, fontSize: '12px', fontWeight: 600 },
       badText: { color: C.bad, fontSize: '12px', fontWeight: 600 },
       pre: {
-        margin: 0, padding: '8px', borderRadius: '6px', background: C.layer2, border: `1px solid ${C.border}`,
+        margin: 0, padding: '8px', borderRadius: '6px', background: C.surface, border: `1px solid ${C.border}`,
         fontSize: '11.5px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
       },
     }
+
+    // inline style 表达不了的状态：hover、disabled、focus、placeholder。
+    // 全部基于 currentColor 与 token 回退，因此在明暗两种主题下都成立。
+    const SCOPE = 'dsh-ssh-vault'
+    const CSS = [
+      `.${SCOPE} button { transition: border-color .12s ease, background-color .12s ease; }`,
+      `.${SCOPE} button:hover:not(:disabled) { border-color: var(--dsw-alias-label-primary, currentColor); }`,
+      `.${SCOPE} button:disabled { opacity: .55; cursor: default; }`,
+      `.${SCOPE} button:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, currentColor); outline-offset: 1px; }`,
+      `.${SCOPE} input::placeholder { color: var(--dsw-alias-label-secondary, currentColor); opacity: .7; }`,
+    ].join('\n')
 
     /**
      * 调一次宿主路由。
@@ -399,7 +414,8 @@ window.__ModuleLoader__.load({
           onClick: () => setForm({ mode: 'new', record: null }),
         }, t('add')))
 
-      return h('div', { style: S.page },
+      return h('div', { className: SCOPE, style: S.page },
+        h('style', { key: 'scope-style' }, CSS),
         header,
         state.error.length > 0 ? h('div', { style: S.error }, state.error) : null,
         form !== null ? h(HostForm, {
