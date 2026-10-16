@@ -1,0 +1,28 @@
+# 依赖与包管理器缓存（本插件零运行时依赖，这里只是防御）
+node_modules/
+.npm-cache/
+pnpm-lock.yaml
+
+# 打包产物
+dist/
+*.tgz
+*.zip
+
+# 本地机密：绝不入库
+id_rsa
+id_rsa.pub
+*.pem
+*.ppk
+*.key
+.credentials.yaml
+.env
+.env.*
+known_hosts
+ssh-vault/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,45 @@
+{
+  "name": "@local/dsh-ssh-vault",
+  "version": "1.5.0",
+  "type": "module",
+  "description": "Encrypted SSH host vault and model-facing SSH tools for the DeepSeek Harness",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis-plugin",
+    "ssh",
+    "vault",
+    "encryption"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "scripts",
+    "locale",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "SSH Vault",
+    "description": "Connect to Linux hosts over SSH with the host address, port, account, and password kept in an encrypted vault."
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

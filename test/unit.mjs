@@ -1,0 +1,174 @@
+/**
+ * 单元回归：ssh/scp 参数构造，以及“中断/超时仍保留已产生输出”。
+ *
+ * 参数构造部分在任何环境下都能跑；进程类用例需要能 spawn 子进程，
+ * 受限沙箱下会自动跳过并明确报告。
+ *
+ * 运行：node test/unit.mjs
+ */
+import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, runProcess, sudoPrelude } from '../lib/ssh.js'
+
+let passed = 0
+const failures = []
+const skipped = []
+
+function check(name, condition, detail) {
+  if (condition) {
+    passed += 1
+    return
+  }
+  failures.push(`${name}${detail === undefined ? '' : ` — ${detail}`}`)
+}
+
+/** 取 `-flag value` 形式选项的值。 */
+function optionValue(args, flag) {
+  const index = args.indexOf(flag)
+  return index >= 0 ? args[index + 1] : undefined
+}
+
+/** 取 `-o Key=Value` 形式的选项值。 */
+function optionEntry(args, key) {
+  for (let i = 0; i < args.length - 1; i += 1) {
+    if (args[i] === '-o' && typeof args[i + 1] === 'string' && args[i + 1].startsWith(`${key}=`)) {
+      return args[i + 1].slice(key.length + 1)
+    }
+  }
+  return undefined
+}
+
+const passwordRecord = {
+  alias: 'demo',
+  host: '192.168.1.100',
+  port: 2222,
+  username: 'root',
+  auth: { type: 'password', password: 'secret' },
+  shell: 'bash',
+}
+const keyRecord = {
+  ...passwordRecord,
+  auth: { type: 'key', privateKeyPath: 'C:\\keys\\id_rsa' },
+}
+const knownHostsPath = 'C:\\vault\\known_hosts'
+
+// —— ssh 参数 ——
+const sshArgs = buildSshArgs({ record: passwordRecord, knownHostsPath, connectTimeoutSec: 10 })
+check('ssh 端口', optionValue(sshArgs, '-p') === '2222', sshArgs.join(' '))
+check('ssh 无终端', sshArgs.includes('-T'))
+check('ssh 目标', sshArgs.includes('root@192.168.1.100'), sshArgs.join(' '))
+check('ssh 私钥 known_hosts', optionEntry(sshArgs, 'UserKnownHostsFile') === knownHostsPath, sshArgs.join(' '))
+check('ssh 哈希主机名', optionEntry(sshArgs, 'HashKnownHosts') === 'yes')
+check('ssh 保活', optionEntry(sshArgs, 'ServerAliveInterval') === '30')
+check('ssh 连接超时', optionEntry(sshArgs, 'ConnectTimeout') === '10')
+check('ssh 口令认证', optionEntry(sshArgs, 'PreferredAuthentications') === 'password,keyboard-interactive')
+check('ssh 关闭公钥', optionEntry(sshArgs, 'PubkeyAuthentication') === 'no')
+check('ssh 默认 shell', sshArgs.slice(-2).join(' ') === 'bash -s', sshArgs.slice(-3).join(' '))
+check('ssh 默认不绑定源地址', !sshArgs.includes('-b'))
+
+const boundArgs = buildSshArgs({ record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, bindAddress: '192.0.2.150' })
+check('ssh 绑定源地址', optionValue(boundArgs, '-b') === '192.0.2.150', boundArgs.join(' '))
+check('ssh 源地址在目标之前', boundArgs.indexOf('-b') < boundArgs.indexOf('root@192.168.1.100'))
+
+const winArgs = buildSshArgs({ record: { ...passwordRecord, shell: 'cmd' }, knownHostsPath, connectTimeoutSec: 10 })
+check('ssh cmd shell', winArgs.slice(-2).join(' ') === 'cmd.exe /Q', winArgs.slice(-2).join(' '))
+const psArgs = buildSshArgs({ record: { ...passwordRecord, shell: 'powershell' }, knownHostsPath, connectTimeoutSec: 10 })
+check('ssh powershell shell', psArgs.slice(-5).join(' ') === 'powershell -NoProfile -NonInteractive -Command -', psArgs.slice(-5).join(' '))
+
+const keyArgs = buildSshArgs({ record: keyRecord, knownHostsPath, connectTimeoutSec: 10 })
+check('ssh 密钥文件', optionValue(keyArgs, '-i') === 'C:\\keys\\id_rsa', keyArgs.join(' '))
+check('ssh 只用指定密钥', optionEntry(keyArgs, 'IdentitiesOnly') === 'yes')
+
+const configArgs = buildSshArgs({ record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, sshConfigFile: 'C:\\vault\\ssh_config' })
+check('ssh 自定义配置文件', optionValue(configArgs, '-F') === 'C:\\vault\\ssh_config', configArgs.join(' '))
+
+// —— scp 参数 ——
+const upload = buildScpArgs({ record: passwordRecord, direction: 'upload', local: 'C:\\tmp\\a.txt', remote: '/tmp/a.txt', knownHostsPath, connectTimeoutSec: 10 })
+check('scp 大写端口', optionValue(upload, '-P') === '2222', upload.join(' '))
+check('scp 上传顺序', upload.slice(-2).join(' ') === 'C:\\tmp\\a.txt root@192.168.1.100:/tmp/a.txt', upload.slice(-2).join(' '))
+const download = buildScpArgs({ record: passwordRecord, direction: 'download', local: 'C:\\tmp\\a.txt', remote: '/tmp/a.txt', knownHostsPath, connectTimeoutSec: 10 })
+check('scp 下载顺序', download.slice(-2).join(' ') === 'root@192.168.1.100:/tmp/a.txt C:\\tmp\\a.txt', download.slice(-2).join(' '))
+const boundUpload = buildScpArgs({ record: passwordRecord, direction: 'upload', local: 'a', remote: 'b', knownHostsPath, connectTimeoutSec: 10, bindAddress: '192.0.2.150' })
+check('scp 绑定源地址', optionEntry(boundUpload, 'BindAddress') === '192.0.2.150', boundUpload.join(' '))
+const recursiveUpload = buildScpArgs({ record: passwordRecord, direction: 'upload', local: 'a', remote: 'b', recursive: true, knownHostsPath, connectTimeoutSec: 10 })
+check('scp 递归', recursiveUpload.includes('-r'))
+
+// —— 进程类用例：超时与取消都不能丢掉已收到的输出 ——
+const probeEnv = process.env
+let spawnable = true
+try {
+  await runProcess(process.execPath, ['-e', 'process.exit(0)'], { env: probeEnv, timeoutMs: 15000, maxOutputBytes: 1000 })
+} catch (error) {
+  spawnable = false
+  skipped.push(`进程类用例已跳过（无法启动子进程：${error?.code ?? error?.message}）`)
+}
+
+if (spawnable) {
+  const emitThenHang = (text, stream = 'stdout') => [
+    '-e',
+    `process.${stream}.write(${JSON.stringify(`${text}\n`)}); setTimeout(() => {}, 60000)`,
+  ]
+
+  const timedOut = await runProcess(process.execPath, emitThenHang('BEFORE_SLEEP'), {
+    env: probeEnv, timeoutMs: 3000, maxOutputBytes: 10000,
+  })
+  check('超时仍保留 stdout', timedOut.timedOut === true && timedOut.stdout.includes('BEFORE_SLEEP'), JSON.stringify(timedOut))
+  check('超时标记 timedOut', timedOut.timedOut === true)
+
+  const timedOutErr = await runProcess(process.execPath, emitThenHang('ERR_BEFORE', 'stderr'), {
+    env: probeEnv, timeoutMs: 3000, maxOutputBytes: 10000,
+  })
+  check('超时仍保留 stderr', timedOutErr.stderr.includes('ERR_BEFORE'), JSON.stringify(timedOutErr))
+
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(), 800)
+  const cancelled = await runProcess(process.execPath, emitThenHang('BEFORE_ABORT'), {
+    env: probeEnv, timeoutMs: 30000, maxOutputBytes: 10000, signal: controller.signal,
+  })
+  check('取消仍保留 stdout', cancelled.aborted === true && cancelled.stdout.includes('BEFORE_ABORT'), JSON.stringify(cancelled))
+
+  const chunks = []
+  const streamed = await runProcess(process.execPath, emitThenHang('LIVE_CHUNK'), {
+    env: probeEnv, timeoutMs: 3000, maxOutputBytes: 10000,
+    onData: (chunk, channel) => chunks.push([channel, chunk]),
+  })
+  check('实时回调收到分段输出', chunks.some(([channel, chunk]) => channel === 'stdout' && chunk.includes('LIVE_CHUNK')), JSON.stringify(chunks))
+
+  const noLimit = await runProcess(process.execPath, ['-e', 'process.stdout.write("QUICK")'], {
+    env: probeEnv, timeoutMs: 0, maxOutputBytes: 1000,
+  })
+  check('timeoutMs=0 表示不限时', noLimit.timedOut === false && noLimit.stdout === 'QUICK', JSON.stringify(noLimit))
+}
+
+// —— sudo 预热：口令只进脚本，不进命令行 ——
+const prelude = sudoPrelude('example-pw')
+check('sudo 预热调用 sudo -S -v', prelude.includes("sudo -S -p '' -v"), prelude)
+check('sudo 预热把口令写成单引号字面量', prelude.includes("'example-pw'"), prelude)
+check('sudo 预热失败即退出', prelude.includes('exit 1'), prelude)
+check('sudo 预热不含 -S 之外的命令行口令', !prelude.includes('sudo -S example-pw'), prelude)
+const quotedPrelude = sudoPrelude("pa'ss word")
+check('sudo 预热转义单引号与空格', quotedPrelude.includes(`'pa'\\''ss word'`), quotedPrelude)
+const sshArgsForSudo = buildSshArgs({ record: passwordRecord, knownHostsPath, connectTimeoutSec: 10 })
+check('ssh 参数里永远不含口令', !sshArgsForSudo.join(' ').includes('secret'), sshArgsForSudo.join(' '))
+
+// —— wait_for / detach 远端脚本 ——
+const waitScript = buildWaitScript({ path: '/var/log/kali-upgrade.log', regex: 'Upgrade complete', timeoutMs: 600000, intervalMs: 3000 })
+check('wait 脚本含目标路径', waitScript.includes("'/var/log/kali-upgrade.log'"), waitScript)
+check('wait 脚本含正则', waitScript.includes("'Upgrade complete'"), waitScript)
+check('wait 脚本用 grep -qE 检测', waitScript.includes('grep -qE'), waitScript)
+check('wait 脚本超时退出 124', waitScript.includes('exit 124'), waitScript)
+check('wait 脚本含轮询间隔', waitScript.includes('sleep 3'), waitScript)
+const waitNoRegex = buildWaitScript({ path: '/tmp/done' })
+check('wait 省略正则时只等文件出现', !waitNoRegex.includes('DSH_PATTERN') && waitNoRegex.includes('exit 0'), waitNoRegex)
+check('wait 脚本带默认超时 600s', waitNoRegex.includes('+ 600'), waitNoRegex)
+
+const detachScript = buildDetachScript({ command: 'apt -y full-upgrade', token: 'tok123' })
+check('detach 用 setsid 脱离会话', detachScript.includes('setsid sh -c'), detachScript)
+check('detach 重定向输出到日志', detachScript.includes('> "$DSH_LOG" 2>&1'), detachScript)
+check('detach 写 pid 文件', detachScript.includes('echo $! > "$DSH_PID"'), detachScript)
+check('detach 安全引用命令', detachScript.includes("'apt -y full-upgrade'"), detachScript)
+check('detach 告知存活查询方式', detachScript.includes('ALIVE'), detachScript)
+
+console.log(`${passed} 项通过，${failures.length} 项失败`)
+for (const note of skipped) console.log(`SKIP: ${note}`)
+for (const failure of failures) console.error(`FAIL: ${failure}`)
+if (failures.length > 0) process.exit(1)
+console.log('全部通过')
