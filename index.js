@@ -14,7 +14,7 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
-import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, parseExitStatus, probeCommand, runRemote, shellKind, transferFile } from './lib/ssh.js'
+import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, parseExitStatus, probeCommand, renderTerminalBlock, runRemote, shellKind, transferFile } from './lib/ssh.js'
 import { API_PREFIX, createVaultApi } from './lib/vault-api.js'
 import { Vault, defaultVaultDir, maskHost, maskUser } from './lib/vault.js'
 
@@ -33,14 +33,17 @@ const DEFAULT_MAX_OUTPUT = 200000
  * @param options - 工具名、描述、参数与执行函数。
  * @returns 可直接注册的工具定义。
  */
-function textTool({ name: toolName, description, parameters, execute, presentCall, presentResult }) {
+function textTool({ name: toolName, description, parameters, execute, terminal, presentCall, presentResult }) {
   return {
     name: toolName,
     description,
     parameters,
     output: {
       schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : String(value) }],
+      render: (_args, value) => {
+        const text = typeof value === 'string' ? value : String(value)
+        return [{ type: 'text', text: terminal === true ? renderTerminalBlock(text) : text }]
+      },
     },
     execute,
     ...(presentCall !== undefined ? { presentCall } : {}),
@@ -521,6 +524,7 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register(textTool({
     name: 'ssh_run',
+    terminal: true,
     presentCall: (args) => terminalCall(args.command, args.host),
     presentResult: (_args, result) => terminalResult(result),
     description: 'Run a shell command on a saved SSH host and return its stdout and stderr. '
@@ -679,6 +683,7 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register(textTool({
     name: 'ssh_transfer',
+    terminal: true,
     presentCall: (args) => terminalCall(
       `scp ${args.direction === 'upload' ? `${args.local} → ${args.remote}` : `${args.remote} → ${args.local}`}`,
       args.host,
@@ -752,6 +757,7 @@ export function apply(ctx, config = {}) {
 
   ctx.effect(() => ctx.tools.register(textTool({
     name: 'ssh_probe',
+    terminal: true,
     presentCall: (args) => terminalCall(`ssh_probe ${args.host}`, args.host),
     presentResult: (_args, result) => terminalResult(result),
     description: 'Check that a saved SSH host is reachable and report what the remote system is. '

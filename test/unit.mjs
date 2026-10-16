@@ -6,7 +6,7 @@
  *
  * 运行：node test/unit.mjs
  */
-import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, parseExitStatus, runProcess, sudoPrelude } from '../lib/ssh.js'
+import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, parseExitStatus, renderTerminalBlock, runProcess, sudoPrelude } from '../lib/ssh.js'
 
 let passed = 0
 const failures = []
@@ -185,6 +185,14 @@ check('detach 告知存活查询方式', detachScript.includes('ALIVE'), detachS
   const killed = parseExitStatus('partial\n[killed by signal: SIGKILL]')
   check('识别终止信号', killed.signal === 'SIGKILL' && killed.exitCode === undefined, JSON.stringify(killed))
   check('终止信号标记被移除', !killed.body.includes('killed by signal'), JSON.stringify(killed.body))
+}
+
+// —— 终端样式渲染：ssh 工具的结果包成 console 代码块 ——
+{
+  check('渲染成 console 围栏', renderTerminalBlock('hello\nworld') === '```console\nhello\nworld\n```', JSON.stringify(renderTerminalBlock('hello\nworld')))
+  check('结尾多余换行被去掉', renderTerminalBlock('out\n\n\n') === '```console\nout\n```', JSON.stringify(renderTerminalBlock('out\n\n\n')))
+  check('空输出不留空白行', renderTerminalBlock('') === '```console\n\n```', JSON.stringify(renderTerminalBlock('')))
+  check('非字符串输入也能渲染', renderTerminalBlock(42).includes('42'), JSON.stringify(renderTerminalBlock(42)))
 }
 
 console.log(`${passed} 项通过，${failures.length} 项失败`)
