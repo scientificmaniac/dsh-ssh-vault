@@ -237,6 +237,35 @@ async function invoke(handler, url, body, method) {
   check('非法 JSON 返回 400', badJson.statusCode === 400, String(badJson.statusCode))
 }
 
+// —— openVault：永远只打开插件自己的目录 ——
+{
+  const vault = memoryVault()
+  const opened = []
+  const handler = createVaultApi({
+    vault,
+    vaultDir: '/tmp/vault',
+    probe: async () => ({ ok: true, detail: '', notes: [] }),
+    openFolder: async (target) => { opened.push(target) },
+  })
+
+  const direct = await invoke(handler, `${API_PREFIX}/openVault`, {})
+  check('openVault 返回成功', direct.envelope.ok === true, JSON.stringify(direct.envelope))
+  check('openVault 打开保险库目录', opened.length === 1 && opened[0] === '/tmp/vault', JSON.stringify(opened))
+
+  // 安全性回归：请求体里的 path 必须被完全忽略，否则这就成了「按需启动本机程序」的接口。
+  await invoke(handler, `${API_PREFIX}/openVault`, { path: '/etc', target: 'C:\\Windows' })
+  check('openVault 忽略请求体里的路径', opened.length === 2 && opened[1] === '/tmp/vault', JSON.stringify(opened))
+
+  const failing = createVaultApi({
+    vault,
+    vaultDir: '/tmp/vault',
+    probe: async () => ({ ok: true, detail: '', notes: [] }),
+    openFolder: async () => { throw new Error('shell unavailable') },
+  })
+  const failed = await invoke(failing, `${API_PREFIX}/openVault`, {})
+  check('openVault 失败时报错', failed.envelope.ok === false && String(failed.envelope.error.message).includes('shell unavailable'), JSON.stringify(failed.envelope))
+}
+
 console.log(`${passed} 项通过，${failures.length} 项失败`)
 for (const failure of failures) console.error(`FAIL: ${failure}`)
 if (failures.length > 0) process.exit(1)

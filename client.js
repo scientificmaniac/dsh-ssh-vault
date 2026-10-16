@@ -59,6 +59,7 @@ window.__ModuleLoader__.load({
         chooseFile: '选择文件',
         noFileChosen: '未选择任何文件',
         usernameKeyHint: '密钥认证同样需要账号——SSH 连接的是 user@host。',
+        openVault: '用资源管理器打开',
         passwordBadge: '已存密码',
         noPasswordBadge: '无密码',
         sudoBadge: 'sudo 口令',
@@ -110,6 +111,7 @@ window.__ModuleLoader__.load({
         chooseFile: 'Choose file',
         noFileChosen: 'No file chosen',
         usernameKeyHint: 'Key authentication still needs the account — SSH connects as user@host.',
+        openVault: 'Open in file manager',
         passwordBadge: 'password stored',
         noPasswordBadge: 'no password',
         sudoBadge: 'sudo password',
@@ -156,8 +158,19 @@ window.__ModuleLoader__.load({
       intro: { margin: '4px 0 0', color: C.textDim, maxWidth: '62ch' },
       meta: {
         marginTop: '6px', color: C.textDim, fontSize: '12px',
-        // 三项挤一行：默认会在分隔用的全角空格处折行，显式禁掉；超出时省略号 + title 看全文。
+        // 第一行（版本 + 密钥保护）保持单行；全角空格也是可换行点，必须显式禁掉。
         whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      },
+      metaBlock: { display: 'flex', flexDirection: 'column', minWidth: 0 },
+      metaRow: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px', color: C.textDim, fontSize: '12px', minWidth: 0 },
+      metaPath: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 },
+      miniButton: {
+        appearance: 'none', WebkitAppearance: 'none', boxSizing: 'border-box', flex: 'none',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        height: '22px', padding: '0 8px',
+        border: `0.5px solid ${C.border}`, borderRadius: C.radiusSm,
+        background: 'transparent', color: C.text,
+        font: 'inherit', fontSize: '11px', lineHeight: '16px', cursor: 'pointer', whiteSpace: 'nowrap',
       },
       button: {
         // 与宿主 .button / .outline 对齐：透明底、0.5px 描边、继承的文字色。
@@ -464,14 +477,23 @@ window.__ModuleLoader__.load({
       h('path', { d: 'M6.5 9.5l3 2.5-3 2.5' }),
       h('path', { d: 'M12.5 14.5h5' }))
 
-      const metaText = `dsh-ssh-vault v${state.version}　·　${t('keyMode')}: ${state.keyMode}　·　${t('vaultDir')}: ${state.vaultDir}`
+      const openVault = async () => {
+        const result = await call('openVault')
+        if (!result.ok) setState((s) => ({ ...s, error: result.error }))
+      }
+
+      const metaText = `dsh-ssh-vault v${state.version}　·　${t('keyMode')}: ${state.keyMode}`
 
       const header = h('div', { style: S.head },
-        h('div', null,
+        h('div', { style: { minWidth: 0 } },
           h('div', { style: S.titleRow }, terminalIcon, h('h3', { style: S.h }, t('heading'))),
           h('p', { style: S.intro }, t('intro')),
           state.status === 'ready' && state.error.length === 0
-            ? h('div', { style: S.meta, title: metaText }, metaText)
+            ? h('div', { style: S.metaBlock },
+              h('div', { style: S.meta, title: metaText }, metaText),
+              h('div', { style: S.metaRow },
+                h('span', { style: S.metaPath, title: state.vaultDir }, `${t('vaultDir')}: ${state.vaultDir}`),
+                h('button', { style: S.miniButton, onClick: openVault }, t('openVault'))))
             : null),
         h('button', {
           'data-variant': 'primary',
