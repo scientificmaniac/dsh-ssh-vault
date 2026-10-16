@@ -62,6 +62,15 @@ window.__ModuleLoader__.load({
         openVault: '用资源管理器打开',
         openWorking: '正在打开…',
         openDone: '已打开',
+        keyAcceptHint: '支持 OpenSSH（id_rsa / id_ed25519，通常没有扩展名）与 PEM（.pem / .key）。'
+          + '若文件选择器里看不到你的私钥，把类型切到「所有文件」即可。',
+        keyIsPublic: '这是公钥，不能用于登录。请选择不带 .pub 后缀的私钥文件。',
+        keyIsPpk: '这是 PuTTY 的 .ppk 私钥，OpenSSH 无法直接使用；请先用 puttygen 转换。',
+        keyNotPrivate: '这不是 OpenSSH/PEM 私钥（缺少 BEGIN … PRIVATE KEY 头）。',
+        keyTooLarge: '文件过大，不像是私钥。',
+        keyReadError: '无法读取该文件。',
+        passphrase: '私钥口令（可选）',
+        passphraseHint: '私钥本身带密码时填写；留空表示私钥未加密。',
         passwordBadge: '已存密码',
         noPasswordBadge: '无密码',
         sudoBadge: 'sudo 口令',
@@ -116,6 +125,15 @@ window.__ModuleLoader__.load({
         openVault: 'Open in file manager',
         openWorking: 'Opening…',
         openDone: 'Opened',
+        keyAcceptHint: 'OpenSSH keys (id_rsa / id_ed25519, usually without an extension) and PEM keys (.pem / .key) '
+          + 'are accepted. If your key is not listed, switch the file type filter to “All files”.',
+        keyIsPublic: 'This is a public key; it cannot be used to log in. Choose the private key without the .pub suffix.',
+        keyIsPpk: 'This is a PuTTY .ppk key, which OpenSSH cannot use directly. Convert it with puttygen first.',
+        keyNotPrivate: 'This is not an OpenSSH/PEM private key (no BEGIN … PRIVATE KEY header).',
+        keyTooLarge: 'The file is too large to be a private key.',
+        keyReadError: 'Could not read that file.',
+        passphrase: 'Key passphrase (optional)',
+        passphraseHint: 'Fill in when the key itself is encrypted; leave blank for an unencrypted key.',
         passwordBadge: 'password stored',
         noPasswordBadge: 'no password',
         sudoBadge: 'sudo password',
@@ -278,6 +296,31 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /**
+     * 先在本机看一眼选中的文件到底是不是私钥。
+     *
+     * 这才是真正管用的限制：`accept` 只能按扩展名过滤，而最常见的私钥
+     * （`id_rsa`、`id_ed25519`）恰恰没有扩展名——只靠扩展名会把主用途挡在门外。
+     * 内容检查既拦得住无关文件，也不会误伤它们。
+     *
+     * @param file - 用户选中的文件。
+     * @returns 问题描述；看起来是私钥时返回 `null`。
+     */
+    async function inspectKeyFile(file) {
+      if (file.size > 64 * 1024) return t('keyTooLarge')
+      let text
+      try {
+        text = (await file.text()).slice(0, 8192)
+      } catch {
+        return t('keyReadError')
+      }
+      const first = (text.split(/\r?\n/, 1)[0] ?? '').trim()
+      if (/^(ssh-rsa|ssh-ed25519|ssh-dss|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)/.test(first)) return t('keyIsPublic')
+      if (/^PuTTY-User-Key-File-/.test(first)) return t('keyIsPpk')
+      if (!/^-----BEGIN (?:OPENSSH |RSA |DSA |EC |ENCRYPTED )?PRIVATE KEY-----/m.test(text)) return t('keyNotPrivate')
+      return null
+    }
+
     /** 一行表单字段。 */
     function Field(props) {
       return h('label', { style: S.field },
@@ -308,6 +351,8 @@ window.__ModuleLoader__.load({
       const [password, setPassword] = useState('')
       const [keyPath, setKeyPath] = useState(existing && existing.privateKeyPath ? existing.privateKeyPath : '')
       const [keyFile, setKeyFile] = useState(null)
+      const [keyFileError, setKeyFileError] = useState('')
+      const [passphrase, setPassphrase] = useState('')
       const [shell, setShell] = useState(existing ? existing.shell : 'bash')
       const [description, setDescription] = useState(existing ? existing.description : '')
       const [tags, setTags] = useState(existing && existing.tags.length > 0 ? existing.tags.join(', ') : '')
@@ -353,6 +398,7 @@ window.__ModuleLoader__.load({
         if (authType === 'password') payload.password = password
         else {
           payload.privateKeyPath = keyPath.trim()
+          if (passphrase.length > 0) payload.passphrase = passphrase
           if (keyFile) {
             try {
               payload.privateKeyFile = { name: keyFile.name, base64: await readAsBase64(keyFile) }
@@ -396,19 +442,43 @@ window.__ModuleLoader__.load({
           ? h(Field, { label: t('password'), hint: existing && existing.hasPassword ? t('passwordKeep') : undefined },
             h('input', { style: S.input, type: 'password', value: password, autoComplete: 'new-password', onChange: (e) => setPassword(e.target.value) }))
           : h('div', { style: S.fields },
-            h(Field, { label: t('keyUpload'), hint: t('keyUploadHint') },
+            h(Field, { label: t('keyUpload'), hint: `${t('keyUploadHint')}　${t('keyAcceptHint')}` },
               // 原生 file input 自带边框与内边距，塞进 28px 的输入框里就会像截图那样错位。
               // 隐藏它、用自己的按钮当触发器，高度与圆角便与其它控件一致。
               h('label', { style: { ...S.button, alignSelf: 'flex-start' } },
                 t('chooseFile'),
                 h('input', {
                   type: 'file',
+                  // accept 只是给文件选择器的建议：无扩展名的 id_rsa 仍需切到「所有文件」，
+                  // 真正的把关在 inspectKeyFile（本机预检）与 Host 侧的内容校验。
+                  accept: '.pem,.key,.ppk,.openssh,application/x-pem-file',
                   style: { display: 'none' },
-                  onChange: (e) => setKeyFile(e.target.files && e.target.files[0] ? e.target.files[0] : null),
+                  onChange: async (e) => {
+                    const picked = e.target.files && e.target.files[0] ? e.target.files[0] : null
+                    setKeyFileError('')
+                    if (picked === null) {
+                      setKeyFile(null)
+                      return
+                    }
+                    const problem = await inspectKeyFile(picked)
+                    if (problem !== null) {
+                      // 选错就地拒绝并清空，免得把无关文件传上去再被 Host 退回来。
+                      setKeyFile(null)
+                      setKeyFileError(problem)
+                      e.target.value = ''
+                      return
+                    }
+                    setKeyFile(picked)
+                  },
                 })),
-              h('span', { style: S.hint }, keyFile ? `${t('keyUploaded')}: ${keyFile.name}` : t('noFileChosen'))),
+              h('span', { style: keyFileError.length > 0 ? S.badText : S.hint },
+                keyFileError.length > 0
+                  ? keyFileError
+                  : keyFile ? `${t('keyUploaded')}: ${keyFile.name}` : t('noFileChosen'))),
             h(Field, { label: t('keyPath') },
-              h('input', { style: S.input, value: keyPath, placeholder: 'C:\\keys\\id_rsa', onChange: (e) => setKeyPath(e.target.value) }))),
+              h('input', { style: S.input, value: keyPath, placeholder: 'C:\\keys\\id_rsa', onChange: (e) => setKeyPath(e.target.value) })),
+            h(Field, { label: t('passphrase'), hint: t('passphraseHint') },
+              h('input', { style: S.input, type: 'password', autoComplete: 'new-password', value: passphrase, onChange: (e) => setPassphrase(e.target.value) }))),
 
         h('div', { style: S.fields },
           h(Field, { label: t('shell') },

@@ -6,7 +6,16 @@
  *
  * 运行：node test/vault-api.mjs
  */
+import { rm } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { API_PREFIX, createVaultApi } from '../lib/vault-api.js'
+
+/**
+ * 测试用的保险库目录。走系统临时目录，因为「上传私钥」的用例会真的落盘；
+ * 结束时整目录删除，不在用户磁盘上留东西。
+ */
+const VAULT_DIR = path.join(os.tmpdir(), `dsh-ssh-vault-test-${process.pid}`)
 
 let passed = 0
 const failures = []
@@ -101,7 +110,7 @@ async function invoke(handler, url, body, method) {
 // —— list：脱敏且永不返回口令 ——
 {
   const vault = memoryVault({ demo: sampleRecord })
-  const handler = createVaultApi({ vault, vaultDir: '/tmp/vault', probe: async () => ({ ok: true, detail: '', notes: [] }) })
+  const handler = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
   const { status, envelope, raw } = await invoke(handler, `${API_PREFIX}/list`, {})
   check('list 返回 200', status === 200, String(status))
   check('list 成功 envelope', envelope.ok === true, raw)
@@ -116,7 +125,7 @@ async function invoke(handler, url, body, method) {
 // —— save：校验 ——
 {
   const vault = memoryVault()
-  const handler = createVaultApi({ vault, vaultDir: '/tmp/vault', probe: async () => ({ ok: true, detail: '', notes: [] }) })
+  const handler = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
   const cases = [
     ['空别名被拒', { alias: '', host: 'h', username: 'u', password: 'p' }, '别名'],
     ['非法别名被拒', { alias: 'a b/c', host: 'h', username: 'u', password: 'p' }, '别名'],
@@ -134,7 +143,7 @@ async function invoke(handler, url, body, method) {
 // —— save：口令认证 ——
 {
   const vault = memoryVault()
-  const handler = createVaultApi({ vault, vaultDir: '/tmp/vault', probe: async () => ({ ok: true, detail: '', notes: [] }) })
+  const handler = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
   const { envelope } = await invoke(handler, `${API_PREFIX}/save`, {
     alias: 'web', host: '192.0.2.20', port: 2222, username: 'deploy', authType: 'password', password: 'pw-from-ui', shell: 'bash',
   })
@@ -147,7 +156,7 @@ async function invoke(handler, url, body, method) {
 // —— save：编辑时留空口令表示沿用 ——
 {
   const vault = memoryVault({ demo: sampleRecord })
-  const handler = createVaultApi({ vault, vaultDir: '/tmp/vault', probe: async () => ({ ok: true, detail: '', notes: [] }) })
+  const handler = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
   const { envelope } = await invoke(handler, `${API_PREFIX}/save`, {
     alias: 'demo', host: '192.0.2.10', port: 22, username: 'root', authType: 'password', password: '',
   })
@@ -157,7 +166,7 @@ async function invoke(handler, url, body, method) {
 // —— save：新建时留空口令被拒 ——
 {
   const vault = memoryVault()
-  const handler = createVaultApi({ vault, vaultDir: '/tmp/vault', probe: async () => ({ ok: true, detail: '', notes: [] }) })
+  const handler = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
   const { envelope } = await invoke(handler, `${API_PREFIX}/save`, {
     alias: 'fresh', host: '192.0.2.30', username: 'root', authType: 'password', password: '',
   })
@@ -167,7 +176,7 @@ async function invoke(handler, url, body, method) {
 // —— save：密钥认证的各种输入 ——
 {
   const vault = memoryVault()
-  const handler = createVaultApi({ vault, vaultDir: '/tmp/vault', probe: async () => ({ ok: true, detail: '', notes: [] }) })
+  const handler = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
   const base = { alias: 'keyed', host: '192.0.2.40', username: 'root', authType: 'key' }
 
   const missing = await invoke(handler, `${API_PREFIX}/save`, { ...base })
@@ -184,6 +193,24 @@ async function invoke(handler, url, body, method) {
   const pathOnly = await invoke(handler, `${API_PREFIX}/save`, { ...base, privateKeyPath: 'C:\\keys\\id_rsa' })
   check('仅给路径即可保存', pathOnly.envelope.ok === true, JSON.stringify(pathOnly.envelope))
   check('路径写入 auth', vault.hosts.keyed.auth.type === 'key' && vault.hosts.keyed.auth.privateKeyPath === 'C:\\keys\\id_rsa', JSON.stringify(vault.hosts.keyed?.auth))
+
+  const withPassphrase = await invoke(handler, `${API_PREFIX}/save`, {
+    ...base, privateKeyPath: 'C:\\keys\\id_rsa', passphrase: 'key-secret',
+  })
+  check('私钥口令被保存', withPassphrase.envelope.ok === true && vault.hosts.keyed.auth.passphrase === 'key-secret', JSON.stringify(vault.hosts.keyed?.auth))
+
+  const ppk = Buffer.from('PuTTY-User-Key-File-3: ssh-rsa\nEncryption: none\nComment: imported\n', 'utf8').toString('base64')
+  const asPpk = await invoke(handler, `${API_PREFIX}/save`, { ...base, privateKeyFile: { name: 'id_rsa.ppk', base64: ppk } })
+  check('上传 .ppk 被拒并提示转换', asPpk.envelope.ok === false && String(asPpk.envelope.error.message).includes('ppk'), JSON.stringify(asPpk.envelope))
+
+  // 关键：只搜 “PRIVATE KEY” 字样太松——普通文本里出现这几个词不该被当成私钥。
+  const lookalike = Buffer.from('Here are notes: my PRIVATE KEY is somewhere else entirely.\n', 'utf8').toString('base64')
+  const asLookalike = await invoke(handler, `${API_PREFIX}/save`, { ...base, privateKeyFile: { name: 'notes.txt', base64: lookalike } })
+  check('只含 PRIVATE KEY 字样的文本被拒', asLookalike.envelope.ok === false, JSON.stringify(asLookalike.envelope))
+
+  const realPem = Buffer.from('-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY-----\n', 'utf8').toString('base64')
+  const asPem = await invoke(handler, `${API_PREFIX}/save`, { ...base, privateKeyFile: { name: 'id_rsa.pem', base64: realPem } })
+  check('合法的 PEM 私钥被接受', asPem.envelope.ok === true, JSON.stringify(asPem.envelope))
 }
 
 // —— remove / test / reveal ——
@@ -192,7 +219,7 @@ async function invoke(handler, url, body, method) {
   const probed = []
   const handler = createVaultApi({
     vault,
-    vaultDir: '/tmp/vault',
+    vaultDir: VAULT_DIR,
     probe: async (alias) => {
       probed.push(alias)
       return { ok: true, detail: 'identity: root@demo', notes: [] }
@@ -221,7 +248,7 @@ async function invoke(handler, url, body, method) {
 // —— 协议层 ——
 {
   const vault = memoryVault()
-  const handler = createVaultApi({ vault, vaultDir: '/tmp/vault', probe: async () => ({ ok: true, detail: '', notes: [] }) })
+  const handler = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
 
   const wrongMethod = await invoke(handler, `${API_PREFIX}/list`, {}, 'GET')
   check('非 POST 返回 405', wrongMethod.status === 405, String(wrongMethod.status))
@@ -243,28 +270,30 @@ async function invoke(handler, url, body, method) {
   const opened = []
   const handler = createVaultApi({
     vault,
-    vaultDir: '/tmp/vault',
+    vaultDir: VAULT_DIR,
     probe: async () => ({ ok: true, detail: '', notes: [] }),
     openFolder: async (target) => { opened.push(target) },
   })
 
   const direct = await invoke(handler, `${API_PREFIX}/openVault`, {})
   check('openVault 返回成功', direct.envelope.ok === true, JSON.stringify(direct.envelope))
-  check('openVault 打开保险库目录', opened.length === 1 && opened[0] === '/tmp/vault', JSON.stringify(opened))
+  check('openVault 打开保险库目录', opened.length === 1 && opened[0] === VAULT_DIR, JSON.stringify(opened))
 
   // 安全性回归：请求体里的 path 必须被完全忽略，否则这就成了「按需启动本机程序」的接口。
   await invoke(handler, `${API_PREFIX}/openVault`, { path: '/etc', target: 'C:\\Windows' })
-  check('openVault 忽略请求体里的路径', opened.length === 2 && opened[1] === '/tmp/vault', JSON.stringify(opened))
+  check('openVault 忽略请求体里的路径', opened.length === 2 && opened[1] === VAULT_DIR, JSON.stringify(opened))
 
   const failing = createVaultApi({
     vault,
-    vaultDir: '/tmp/vault',
+    vaultDir: VAULT_DIR,
     probe: async () => ({ ok: true, detail: '', notes: [] }),
     openFolder: async () => { throw new Error('shell unavailable') },
   })
   const failed = await invoke(failing, `${API_PREFIX}/openVault`, {})
   check('openVault 失败时报错', failed.envelope.ok === false && String(failed.envelope.error.message).includes('shell unavailable'), JSON.stringify(failed.envelope))
 }
+
+await rm(VAULT_DIR, { recursive: true, force: true })
 
 console.log(`${passed} 项通过，${failures.length} 项失败`)
 for (const failure of failures) console.error(`FAIL: ${failure}`)
