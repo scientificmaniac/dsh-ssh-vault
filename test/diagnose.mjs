@@ -70,7 +70,7 @@ const multiMethod = notesFor(
 check('归因 多方式被拒不误报公钥', !multiMethod.includes('administrators_authorized_keys'), multiMethod)
 check('归因 多方式被拒落到认证失败', multiMethod.includes('账号或口令不正确'), multiMethod)
 
-const publickeyOnly = notesFor('root@192.168.1.100: Permission denied (publickey).', false, { authType: 'password' })
+const publickeyOnly = notesFor('root@192.0.2.10: Permission denied (publickey).', false, { authType: 'password' })
 check('归因 仅 publickey 判为公钥未装', publickeyOnly.includes('administrators_authorized_keys'), publickeyOnly)
 
 const keyDenied = notesFor(
@@ -80,10 +80,10 @@ const keyDenied = notesFor(
 )
 check('归因 密钥认证被拒判为公钥未装', keyDenied.includes('administrators_authorized_keys'), keyDenied)
 
-const wrongPassword = notesFor('root@192.168.1.100: Permission denied, please try again.')
+const wrongPassword = notesFor('root@192.0.2.10: Permission denied, please try again.')
 check('归因 口令错误', wrongPassword.includes('账号或口令不正确'), wrongPassword)
 
-const tooMany = notesFor('Received disconnect from 192.168.1.100: Too many authentication failures')
+const tooMany = notesFor('Received disconnect from 192.0.2.10: Too many authentication failures')
 check('归因 尝试次数过多', tooMany.includes('IdentitiesOnly'), tooMany)
 
 // —— 传输层 ——
@@ -94,10 +94,10 @@ const bindFailure = notesFor(
 )
 check('归因 源地址在本机不可用', bindFailure.includes('源地址在本机不可用'), bindFailure)
 
-const refused = notesFor('ssh: connect to host 192.168.1.100 port 2222: Connection refused')
+const refused = notesFor('ssh: connect to host 192.0.2.10 port 2222: Connection refused')
 check('归因 端口拒绝', refused.includes('拒绝连接'), refused)
 
-const unroutable = notesFor('ssh: connect to host 192.168.1.100 port 22: Network is unreachable', false, { bindAddress: '192.0.2.150' })
+const unroutable = notesFor('ssh: connect to host 192.0.2.10 port 22: Network is unreachable', false, { bindAddress: '192.0.2.150' })
 check('归因 网络不可达带上源地址', unroutable.includes('192.0.2.150'), unroutable)
 
 const reset = notesFor('kex_exchange_identification: Connection closed by remote host')

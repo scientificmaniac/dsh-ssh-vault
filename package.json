@@ -24,6 +24,11 @@
   "engines": {
     "node": ">=20"
   },
+  "scripts": {
+    "test": "node test/diagnose.mjs && node test/unit.mjs && node test/background.mjs",
+    "test:live": "node test/live.mjs",
+    "test:self": "node test/selftest.mjs"
+  },
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json",
@@ -38,6 +43,7 @@
     "icon.svg",
     "README.md",
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "SECURITY.md",
     "LICENSE"
   ],

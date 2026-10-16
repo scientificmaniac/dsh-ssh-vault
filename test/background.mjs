@@ -32,7 +32,7 @@ function makeRegistry() {
   }
 }
 
-const record = { alias: 'demo', host: '192.168.1.100', port: 22, username: 'root', auth: { type: 'password' } }
+const record = { alias: 'demo', host: '192.0.2.10', port: 22, username: 'root', auth: { type: 'password' } }
 const baseSpec = { record, command: '  echo   hello  ', timeoutMs: 12345 }
 
 // —— 成功路径 ——

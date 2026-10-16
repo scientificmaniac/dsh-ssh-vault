@@ -38,7 +38,7 @@ function optionEntry(args, key) {
 
 const passwordRecord = {
   alias: 'demo',
-  host: '192.168.1.100',
+  host: '192.0.2.10',
   port: 2222,
   username: 'root',
   auth: { type: 'password', password: 'secret' },
@@ -54,7 +54,7 @@ const knownHostsPath = 'C:\\vault\\known_hosts'
 const sshArgs = buildSshArgs({ record: passwordRecord, knownHostsPath, connectTimeoutSec: 10 })
 check('ssh 端口', optionValue(sshArgs, '-p') === '2222', sshArgs.join(' '))
 check('ssh 无终端', sshArgs.includes('-T'))
-check('ssh 目标', sshArgs.includes('root@192.168.1.100'), sshArgs.join(' '))
+check('ssh 目标', sshArgs.includes('root@192.0.2.10'), sshArgs.join(' '))
 check('ssh 私钥 known_hosts', optionEntry(sshArgs, 'UserKnownHostsFile') === knownHostsPath, sshArgs.join(' '))
 check('ssh 哈希主机名', optionEntry(sshArgs, 'HashKnownHosts') === 'yes')
 check('ssh 保活', optionEntry(sshArgs, 'ServerAliveInterval') === '30')
@@ -66,7 +66,7 @@ check('ssh 默认不绑定源地址', !sshArgs.includes('-b'))
 
 const boundArgs = buildSshArgs({ record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, bindAddress: '192.0.2.150' })
 check('ssh 绑定源地址', optionValue(boundArgs, '-b') === '192.0.2.150', boundArgs.join(' '))
-check('ssh 源地址在目标之前', boundArgs.indexOf('-b') < boundArgs.indexOf('root@192.168.1.100'))
+check('ssh 源地址在目标之前', boundArgs.indexOf('-b') < boundArgs.indexOf('root@192.0.2.10'))
 
 const winArgs = buildSshArgs({ record: { ...passwordRecord, shell: 'cmd' }, knownHostsPath, connectTimeoutSec: 10 })
 check('ssh cmd shell', winArgs.slice(-2).join(' ') === 'cmd.exe /Q', winArgs.slice(-2).join(' '))
@@ -83,9 +83,9 @@ check('ssh 自定义配置文件', optionValue(configArgs, '-F') === 'C:\\vault\
 // —— scp 参数 ——
 const upload = buildScpArgs({ record: passwordRecord, direction: 'upload', local: 'C:\\tmp\\a.txt', remote: '/tmp/a.txt', knownHostsPath, connectTimeoutSec: 10 })
 check('scp 大写端口', optionValue(upload, '-P') === '2222', upload.join(' '))
-check('scp 上传顺序', upload.slice(-2).join(' ') === 'C:\\tmp\\a.txt root@192.168.1.100:/tmp/a.txt', upload.slice(-2).join(' '))
+check('scp 上传顺序', upload.slice(-2).join(' ') === 'C:\\tmp\\a.txt root@192.0.2.10:/tmp/a.txt', upload.slice(-2).join(' '))
 const download = buildScpArgs({ record: passwordRecord, direction: 'download', local: 'C:\\tmp\\a.txt', remote: '/tmp/a.txt', knownHostsPath, connectTimeoutSec: 10 })
-check('scp 下载顺序', download.slice(-2).join(' ') === 'root@192.168.1.100:/tmp/a.txt C:\\tmp\\a.txt', download.slice(-2).join(' '))
+check('scp 下载顺序', download.slice(-2).join(' ') === 'root@192.0.2.10:/tmp/a.txt C:\\tmp\\a.txt', download.slice(-2).join(' '))
 const boundUpload = buildScpArgs({ record: passwordRecord, direction: 'upload', local: 'a', remote: 'b', knownHostsPath, connectTimeoutSec: 10, bindAddress: '192.0.2.150' })
 check('scp 绑定源地址', optionEntry(boundUpload, 'BindAddress') === '192.0.2.150', boundUpload.join(' '))
 const recursiveUpload = buildScpArgs({ record: passwordRecord, direction: 'upload', local: 'a', remote: 'b', recursive: true, knownHostsPath, connectTimeoutSec: 10 })

@@ -322,7 +322,7 @@ export function apply(ctx, config = {}) {
         },
         host: {
           type: 'string',
-          description: 'Address the SSH client connects to, such as 192.168.1.100 or a hostname. Required by add.',
+          description: 'Address the SSH client connects to, such as 192.0.2.10 or a hostname. Required by add.',
         },
         port: {
           type: 'integer',

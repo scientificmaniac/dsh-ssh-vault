@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Host-free regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 项目零运行时依赖，无需 install，直接跑免主机回归。
+      - name: Run regression
+        run: npm test
+
+  hygiene:
+    name: Secret hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 红线 1 的自动化兜底：真实内网地址、明文口令、私钥都不该出现在仓库里。
+      - name: Reject committed secrets and real addresses
+        run: |
+          set -e
+          patterns='(192\.168\.[0-9]+\.[0-9]+)|(10\.[0-9]+\.[0-9]+\.[0-9]+)|(BEGIN [A-Z ]*PRIVATE KEY)|(sk-[A-Za-z0-9]{20,})'
+          if git grep -nIE "$patterns" -- . ; then
+            echo "::error::发现疑似真实地址或密钥，请改用文档专用地址（192.0.2.0/24 等）并移除密钥。"
+            exit 1
+          fi
+          echo "OK: 未发现真实地址或密钥"

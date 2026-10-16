@@ -5,7 +5,7 @@
 > wrapped by Windows DPAPI.
 
 给 DeepSeek Harness 的 Host 插件：让智能体通过**别名**操作 SSH 主机，而把主机地址、端口、账号、口令
-全部锁在一个加密保险库里。模型只看到 `vm-centos`，看不到 `192.168.1.100`，也永远拿不到口令。
+全部锁在一个加密保险库里。模型只看到 `vm-centos`，看不到 `192.0.2.10`，也永远拿不到口令。
 
 典型场景：Windows 宿主机通过 SSH 管理本机虚拟机、带外管理机与 Windows 靶机。
 
@@ -113,7 +113,7 @@ Windows OpenSSH 9.x 支持 `SSH_ASKPASS_REQUIRE=force`：没有终端时改用 `
 
 ```
 # 录入（口令会先进入会话日志，再加密落盘）
-ssh_hosts  action=add  alias=vm-centos  host=192.168.1.100  port=22
+ssh_hosts  action=add  alias=vm-centos  host=192.0.2.10  port=22
            username=root  password=...  description="本机 CentOS 虚拟机"  tags=["vm","centos"]
 
 # 日常：只用别名
@@ -375,7 +375,7 @@ node test/unit.mjs
 node test/background.mjs
 
 # 需要一台真实主机
-$env:SSHVAULT_TEST_HOST = '192.168.1.100'
+$env:SSHVAULT_TEST_HOST = '192.0.2.10'
 $env:SSHVAULT_TEST_USER = 'root'
 $env:SSHVAULT_TEST_PASS = '<password>'
 node test/selftest.mjs      # 加密、持久化、真实执行、错误口令、超时保留输出、源地址绑定
@@ -389,17 +389,22 @@ node test/verify-hash.mjs   # known_hosts 是否自动哈希化
 ## 包结构
 
 ```
-package.json           bundle 清单（dsh.bundle.patch 指向 cordis.patch.yml）
-cordis.patch.yml       Loader 行定义（id: ssh-vault）
-index.js               插件入口与 4 个模型面向工具
-lib/vault.js           AES-256-GCM 保险库 + DPAPI / scrypt 密钥保护
-lib/ssh.js             OpenSSH 驱动：参数构造、askpass 注入、超时取消、失败归因
-lib/background.js      ctx.jobs 后台任务适配
-locale/{zh,en}.json    插件管理界面的标题与描述
-icon.svg               插件卡片图标
-LICENSE                MIT
-test/                  开发自测（不随包分发）
-dist/                  分发产物 tgz / zip（不随包分发）
+package.json            bundle 清单（dsh.bundle.patch 指向 cordis.patch.yml）
+cordis.patch.yml        Loader 行定义（id: ssh-vault）
+index.js                插件入口与 4 个模型面向工具
+lib/vault.js            AES-256-GCM 保险库 + DPAPI / scrypt 密钥保护
+lib/ssh.js              OpenSSH 驱动：参数构造、askpass 注入、失败归因、等待与脱离脚本
+lib/background.js       ctx.jobs 后台任务适配
+scripts/set-secret.mjs  离线口令录入（不经过 DSH，也不经过模型）
+locale/{zh,en}.json     插件管理界面的标题与描述
+icon.svg                插件卡片图标
+README.md               使用与安全说明
+CHANGELOG.md            版本历史
+CONTRIBUTING.md         贡献红线、代码风格与测试要求
+SECURITY.md             安全边界与漏洞报告
+LICENSE                 MIT
+test/                   回归（前三个免主机，后三个需真实目标；不随包分发）
+dist/                   分发产物 tgz / zip（不随包分发）
 ```
 
 发布清单由 `package.json` 的 `files` 白名单决定，改动文件后重新打包：
@@ -407,34 +412,22 @@ dist/                  分发产物 tgz / zip（不随包分发）
 ```powershell
 $env:npm_config_cache = "$PWD\.npm-cache"
 npm pack --pack-destination dist
-Rename-Item dist\local-dsh-ssh-vault-1.1.0.tgz dist\dsh-ssh-vault-1.1.0.tgz
 Remove-Item .npm-cache -Recurse -Force
 ```
 
 ## 贡献
 
-欢迎 issue 与 PR。三个免主机回归覆盖了绝大部分逻辑：
+欢迎 issue 与 PR。**动手前请先读 [CONTRIBUTING.md](CONTRIBUTING.md)**——
+这个插件保管别人的口令、在别人的机器上执行命令，那里写了不能破的红线与测试要求。
+
+一条命令跑全部免主机回归（CI 跑的是同一组）：
 
 ```powershell
-node test/diagnose.mjs     # shell 翻译、八进制解码、失败归因
-node test/unit.mjs         # 参数构造、超时/取消保留输出、wait_for / detach 脚本
-node test/background.mjs   # 后台任务注册契约
+npm test
 ```
 
-真实环境回归用环境变量传目标，**源码中不含任何凭据**：
-
-```powershell
-$env:LIVE_KALI_HOST = '<host>'
-$env:LIVE_KALI_USER = '<user>'
-$env:LIVE_KALI_PASS = '<password>'
-$env:LIVE_WIN_HOST  = '<host>'
-$env:LIVE_WIN_USER  = '<user>'
-$env:LIVE_WIN_KEY   = '<private key path>'
-node test/live.mjs
-```
-
-提交前请自行复核 `git status`：**不要提交私钥、口令或真实内网地址**。
-`.gitignore` 已排除常见项，但那不是保证。
+真实环境回归需要自备目标，凭据全部走环境变量、源码中不含任何字面值；
+需要真实主机的用例清单见 CONTRIBUTING 的「测试」一节。
 
 变更历史见 [CHANGELOG.md](CHANGELOG.md)；安全边界与漏洞报告见 [SECURITY.md](SECURITY.md)。
 
