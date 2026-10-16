@@ -151,8 +151,14 @@ window.__ModuleLoader__.load({
       page: { display: 'flex', flexDirection: 'column', gap: '14px', color: C.text, fontSize: '13px', lineHeight: 1.6 },
       head: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' },
       h: { margin: 0, fontSize: '15px', fontWeight: 600, color: C.text },
+      titleRow: { display: 'flex', alignItems: 'center', gap: '8px' },
+      titleIcon: { flex: 'none', color: C.text },
       intro: { margin: '4px 0 0', color: C.textDim, maxWidth: '62ch' },
-      meta: { marginTop: '6px', color: C.textDim, fontSize: '12px' },
+      meta: {
+        marginTop: '6px', color: C.textDim, fontSize: '12px',
+        // 三项挤一行：默认会在分隔用的全角空格处折行，显式禁掉；超出时省略号 + title 看全文。
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      },
       button: {
         // 与宿主 .button / .outline 对齐：透明底、0.5px 描边、继承的文字色。
         appearance: 'none', WebkitAppearance: 'none', boxSizing: 'border-box',
@@ -448,16 +454,24 @@ window.__ModuleLoader__.load({
         await load()
       }
 
+      // 终端图标：设置导航项的图标由 shell 按 section id 绘制，插件无法覆盖
+      // （settings.section 的注册选项只有 id / order / label），所以在页面标题旁补一个。
+      const terminalIcon = h('svg', {
+        viewBox: '0 0 24 24', width: 18, height: 18, style: S.titleIcon, 'aria-hidden': true,
+        fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round',
+      },
+      h('rect', { x: 2.5, y: 4.5, width: 19, height: 15, rx: 2.5 }),
+      h('path', { d: 'M6.5 9.5l3 2.5-3 2.5' }),
+      h('path', { d: 'M12.5 14.5h5' }))
+
+      const metaText = `dsh-ssh-vault v${state.version}　·　${t('keyMode')}: ${state.keyMode}　·　${t('vaultDir')}: ${state.vaultDir}`
+
       const header = h('div', { style: S.head },
         h('div', null,
-          h('h3', { style: S.h }, t('heading')),
+          h('div', { style: S.titleRow }, terminalIcon, h('h3', { style: S.h }, t('heading'))),
           h('p', { style: S.intro }, t('intro')),
           state.status === 'ready' && state.error.length === 0
-            ? h('div', { style: S.meta }, [
-              `dsh-ssh-vault v${state.version}`,
-              `${t('keyMode')}: ${state.keyMode}`,
-              `${t('vaultDir')}: ${state.vaultDir}`,
-            ].join('　·　'))
+            ? h('div', { style: S.meta, title: metaText }, metaText)
             : null),
         h('button', {
           'data-variant': 'primary',
