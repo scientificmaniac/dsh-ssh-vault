@@ -112,19 +112,27 @@ window.__ModuleLoader__.load({
     const LANG = String((typeof navigator !== 'undefined' && navigator.language) || 'zh').toLowerCase().startsWith('zh') ? 'zh' : 'en'
     const t = (key) => DICT[LANG][key] ?? DICT.zh[key] ?? key
 
-    // —— 配色：只让**文字与边框**依赖主题 token，表面色一律用中性半透明 ——
+    // —— 配色：照搬宿主 primitives 的真实定义 ——
     //
-    // 曾经用 `--dsw-alias-bg-layer-1` 做按钮底色，结果在深色主题下按钮是浅底 + 浅字，
-    // 什么都看不见：该 token 的语义是「升起的表面」，并不保证在深色下是暗色。
-    // 中性半透明（rgba(127,127,127,α)）在明暗两种主题下都成立，也不会与文字色撞车。
+    // 下面每个值都取自 @deepseek-ai/dsh-client-ui-primitives 的 Button.module.css 与
+    // Input.module.css，不再凭 token 名字猜语义。之前的两处错误正是猜出来的：
+    //   · 副按钮拿 `bg-layer-1` 当底色——宿主按钮其实是「透明底 + border-l3 描边」；
+    //   · 主按钮用 `brand-primary` 配写死的白字——宿主用的是
+    //     `button-primary-fill` 配 `label-primary-foreground`。
+    // 表面色保留中性半透明回退，token 缺失时也不会落成看不清的底色。
     const C = {
       text: 'var(--dsw-alias-label-primary, currentColor)',
       textDim: 'var(--dsw-alias-label-secondary, currentColor)',
-      border: 'var(--dsw-alias-border-l1, rgba(127,127,127,0.30))',
-      borderStrong: 'var(--dsw-alias-border-l2, rgba(127,127,127,0.48))',
+      textDimmed: 'var(--dsw-alias-label-dimmed, currentColor)',
+      border: 'var(--dsw-alias-border-l3, rgba(127,127,127,0.45))',
+      borderSubtle: 'var(--dsw-alias-border-l4, rgba(127,127,127,0.28))',
+      inputBg: 'var(--dsw-alias-bg-layer-1, rgba(127,127,127,0.10))',
+      primaryFill: 'var(--dsw-alias-button-primary-fill, #4f7cff)',
+      primaryText: 'var(--dsw-alias-label-primary-foreground, #ffffff)',
+      radiusSm: 'var(--dsw-radius-sm, 6px)',
+      radiusMd: 'var(--dsw-radius-md, 8px)',
       surface: 'rgba(127,127,127,0.08)',
       surfaceStrong: 'rgba(127,127,127,0.14)',
-      brand: 'var(--dsw-alias-brand-primary, #4f7cff)',
       ok: 'var(--dsw-alias-state-success-primary, #2e9e5b)',
       bad: 'var(--dsw-alias-state-error-primary, #d64545)',
     }
@@ -136,45 +144,57 @@ window.__ModuleLoader__.load({
       intro: { margin: '4px 0 0', color: C.textDim, maxWidth: '62ch' },
       meta: { marginTop: '6px', color: C.textDim, fontSize: '12px' },
       button: {
-        // 透明底 + 边框：既覆盖浏览器给 button 的默认浅色底，也不依赖任何表面 token。
-        appearance: 'none', border: `1px solid ${C.borderStrong}`, background: 'transparent', color: C.text,
-        borderRadius: '6px', padding: '5px 11px', fontSize: '12px', font: 'inherit', cursor: 'pointer', whiteSpace: 'nowrap',
+        // 与宿主 .button / .outline 对齐：透明底、0.5px 描边、继承的文字色。
+        appearance: 'none', WebkitAppearance: 'none', boxSizing: 'border-box',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '4px',
+        height: '28px', padding: '0 10px',
+        border: `0.5px solid ${C.border}`, borderRadius: C.radiusSm,
+        background: 'transparent', color: C.text,
+        font: 'inherit', fontSize: '12px', lineHeight: '18px', cursor: 'pointer', whiteSpace: 'nowrap',
       },
-      primary: { borderColor: C.brand, background: C.brand, color: '#ffffff' },
+      primary: {
+        // 与宿主 .primary 对齐：专用填充色与专用前景色，都不写死。
+        border: 'none', background: C.primaryFill, color: C.primaryText,
+      },
       danger: { borderColor: C.bad, color: C.bad },
-      card: { border: `1px solid ${C.border}`, borderRadius: '8px', background: C.surface, padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' },
+      card: { border: `0.5px solid ${C.borderSubtle}`, borderRadius: C.radiusMd, background: C.surface, padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' },
       cardHead: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
       alias: { fontWeight: 600, fontSize: '13px' },
-      badge: { border: `1px solid ${C.border}`, borderRadius: '999px', padding: '1px 8px', fontSize: '11px', color: C.textDim },
+      badge: { border: `0.5px solid ${C.border}`, borderRadius: '999px', padding: '1px 8px', fontSize: '11px', color: C.textDim },
       kv: { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', color: C.textDim, fontSize: '12px' },
       row: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' },
-      form: { border: `1px solid ${C.borderStrong}`, borderRadius: '8px', background: C.surfaceStrong, padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' },
+      form: { border: `0.5px solid ${C.border}`, borderRadius: C.radiusMd, background: C.surfaceStrong, padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' },
       fields: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '10px' },
       field: { display: 'flex', flexDirection: 'column', gap: '3px' },
       label: { fontSize: '12px', color: C.textDim },
       input: {
-        border: `1px solid ${C.border}`, borderRadius: '6px', background: C.surface, color: C.text,
-        padding: '5px 8px', fontSize: '12px', font: 'inherit', width: '100%', boxSizing: 'border-box',
+        // 与宿主 .wrap / .input 对齐：bg-layer-1 底、border-l4 描边、label-primary 字。
+        boxSizing: 'border-box', height: '28px', width: '100%', padding: '0 8px',
+        border: `0.5px solid ${C.borderSubtle}`, borderRadius: C.radiusSm,
+        background: C.inputBg, color: C.text, font: 'inherit', fontSize: '12px',
       },
       hint: { fontSize: '11px', color: C.textDim },
       error: { color: C.bad, fontSize: '12px' },
       okText: { color: C.ok, fontSize: '12px', fontWeight: 600 },
       badText: { color: C.bad, fontSize: '12px', fontWeight: 600 },
       pre: {
-        margin: 0, padding: '8px', borderRadius: '6px', background: C.surface, border: `1px solid ${C.border}`,
+        margin: 0, padding: '8px', borderRadius: C.radiusSm, background: C.inputBg, border: `0.5px solid ${C.borderSubtle}`,
         fontSize: '11.5px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
       },
+      footer: { color: C.textDimmed, fontSize: '11px' },
     }
 
-    // inline style 表达不了的状态：hover、disabled、focus、placeholder。
-    // 全部基于 currentColor 与 token 回退，因此在明暗两种主题下都成立。
+    // inline style 表达不了的状态。选择器与宿主的 hover / active / disabled 行为对齐：
+    // 主按钮用 data-variant 排除，改走宿主自己的 button-primary-hover。
     const SCOPE = 'dsh-ssh-vault'
     const CSS = [
-      `.${SCOPE} button { transition: border-color .12s ease, background-color .12s ease; }`,
-      `.${SCOPE} button:hover:not(:disabled) { border-color: var(--dsw-alias-label-primary, currentColor); }`,
-      `.${SCOPE} button:disabled { opacity: .55; cursor: default; }`,
-      `.${SCOPE} button:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, currentColor); outline-offset: 1px; }`,
-      `.${SCOPE} input::placeholder { color: var(--dsw-alias-label-secondary, currentColor); opacity: .7; }`,
+      `.${SCOPE} button { transition: background-color .12s ease, border-color .12s ease; }`,
+      `.${SCOPE} button:not([data-variant="primary"]):hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,0.12)); }`,
+      `.${SCOPE} button:not([data-variant="primary"]):active:not(:disabled) { background: var(--dsw-alias-interactive-bg-active, rgba(127,127,127,0.18)); }`,
+      `.${SCOPE} button[data-variant="primary"]:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover, var(--dsw-alias-button-primary-fill, #4f7cff)); }`,
+      `.${SCOPE} button:disabled { opacity: .4; cursor: not-allowed; }`,
+      `.${SCOPE} button:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, currentColor); outline-offset: 1px; }`,
+      `.${SCOPE} input::placeholder { color: var(--dsw-alias-label-dimmed, currentColor); }`,
     ].join('\n')
 
     /**
@@ -359,22 +379,29 @@ window.__ModuleLoader__.load({
 
         error.length > 0 ? h('div', { style: S.error }, error) : null,
         h('div', { style: S.row },
-          h('button', { style: { ...S.button, ...S.primary }, disabled: busy, onClick: submit }, t('save')),
+          h('button', { 'data-variant': 'primary', style: { ...S.button, ...S.primary }, disabled: busy, onClick: submit }, t('save')),
           h('button', { style: S.button, disabled: busy, onClick: props.onCancel }, t('cancel'))))
     }
 
     /** 设置页主体。 */
     function SshVaultSettings() {
-      const [state, setState] = useState({ status: 'loading', hosts: [], error: '', keyMode: '', vaultDir: '' })
+      const [state, setState] = useState({ status: 'loading', hosts: [], error: '', keyMode: '', vaultDir: '', version: '' })
       const [form, setForm] = useState(null)
       const [tests, setTests] = useState({})
 
       const load = useCallback(async () => {
         const result = await call('list')
         if (result.ok) {
-          setState({ status: 'ready', hosts: result.value.hosts, error: '', keyMode: result.value.keyMode, vaultDir: result.value.vaultDir })
+          setState({
+            status: 'ready',
+            hosts: result.value.hosts,
+            error: '',
+            keyMode: result.value.keyMode,
+            vaultDir: result.value.vaultDir,
+            version: result.value.version ?? '',
+          })
         } else {
-          setState({ status: 'ready', hosts: [], error: result.error, keyMode: '', vaultDir: '' })
+          setState({ status: 'ready', hosts: [], error: result.error, keyMode: '', vaultDir: '', version: '' })
         }
       }, [])
 
@@ -407,9 +434,14 @@ window.__ModuleLoader__.load({
           h('h3', { style: S.h }, t('heading')),
           h('p', { style: S.intro }, t('intro')),
           state.status === 'ready'
-            ? h('div', { style: S.meta }, `${t('keyMode')}: ${state.keyMode}　·　${t('vaultDir')}: ${state.vaultDir}`)
+            ? h('div', { style: S.meta }, [
+              `dsh-ssh-vault v${state.version}`,
+              `${t('keyMode')}: ${state.keyMode}`,
+              `${t('vaultDir')}: ${state.vaultDir}`,
+            ].join('　·　'))
             : null),
         h('button', {
+          'data-variant': 'primary',
           style: { ...S.button, ...S.primary },
           onClick: () => setForm({ mode: 'new', record: null }),
         }, t('add')))
