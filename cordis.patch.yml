@@ -1,4 +1,4 @@
 - insert:
     - id: ssh-vault
-      name: '@local/dsh-ssh-vault'
+      name: 'dsh-ssh-vault'
       config: {}

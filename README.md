@@ -32,7 +32,7 @@
 
 ## 安装
 
-包名 `@local/dsh-ssh-vault`，bundle 行 id `ssh-vault`，装好后提供上表的 4 个工具。
+包名 `dsh-ssh-vault`，bundle 行 id `ssh-vault`，装好后提供上表的 4 个工具。
 
 ### 目标机器前提
 
