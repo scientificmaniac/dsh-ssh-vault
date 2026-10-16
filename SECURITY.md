@@ -1,5 +1,7 @@
 # 安全策略
 
+[English](SECURITY.en.md) | **简体中文**
+
 ## 报告漏洞
 
 请**不要**开公开 issue。通过 GitHub 仓库的 **Security → Report a vulnerability** 私下提交，

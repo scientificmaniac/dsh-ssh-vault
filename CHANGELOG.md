@@ -1,5 +1,7 @@
 # 变更记录
 
+[English](CHANGELOG.en.md) | **简体中文**
+
 本文件记录所有值得注意的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
@@ -31,6 +33,10 @@
   并在提交里出现私网地址、私钥或 API key 时让构建直接失败。
 - `npm test` 一条命令跑全部免主机回归。
 - 全部示例改用 RFC 5737 文档专用地址（`192.0.2.0/24`、`198.51.100.0/24`、`203.0.113.0/24`）。
+- 新增 GitHub issue 与 PR 模板：bug 报告（含环境表与诊断要求）、功能请求与 PR 清单
+  （红线自检项、会话日志影响）。空白 issue 关闭，安全问题引导到私密报告。
+- 补齐英文文档：`README.md` 改为英文主版，中文版移至 `README.zh-CN.md`；
+  `CONTRIBUTING` / `SECURITY` / `CHANGELOG` 各配一份 `.en.md`，顶部互相链接。
 
 ## [1.4.0] - 2026-10-16
 

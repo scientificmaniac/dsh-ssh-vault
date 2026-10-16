@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/scientificmaniac/dsh-ssh-vault/security/advisories/new
+    about: Report privately, not as a public issue. See SECURITY.md for scope and known trade-offs.
+  - name: Contributing guide
+    url: https://github.com/scientificmaniac/dsh-ssh-vault/blob/main/CONTRIBUTING.md
+    about: Red lines, code style, testing requirements and the PR checklist.
+  - name: Question or usage help
+    url: https://github.com/scientificmaniac/dsh-ssh-vault/discussions
+    about: For "how do I…" questions, so the issue tracker stays about defects.

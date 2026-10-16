@@ -42,9 +42,13 @@
     "cordis.patch.yml",
     "icon.svg",
     "README.md",
+    "README.zh-CN.md",
     "CHANGELOG.md",
+    "CHANGELOG.en.md",
     "CONTRIBUTING.md",
+    "CONTRIBUTING.en.md",
     "SECURITY.md",
+    "SECURITY.en.md",
     "LICENSE"
   ],
   "icon": "./icon.svg",
