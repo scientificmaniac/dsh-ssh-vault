@@ -60,6 +60,8 @@ window.__ModuleLoader__.load({
         noFileChosen: '未选择任何文件',
         usernameKeyHint: '密钥认证同样需要账号——SSH 连接的是 user@host。',
         openVault: '用资源管理器打开',
+        openWorking: '正在打开…',
+        openDone: '已打开',
         passwordBadge: '已存密码',
         noPasswordBadge: '无密码',
         sudoBadge: 'sudo 口令',
@@ -112,6 +114,8 @@ window.__ModuleLoader__.load({
         noFileChosen: 'No file chosen',
         usernameKeyHint: 'Key authentication still needs the account — SSH connects as user@host.',
         openVault: 'Open in file manager',
+        openWorking: 'Opening…',
+        openDone: 'Opened',
         passwordBadge: 'password stored',
         noPasswordBadge: 'no password',
         sudoBadge: 'sudo password',
@@ -427,6 +431,8 @@ window.__ModuleLoader__.load({
       const [state, setState] = useState({ status: 'loading', hosts: [], error: '', keyMode: '', vaultDir: '', version: '' })
       const [form, setForm] = useState(null)
       const [tests, setTests] = useState({})
+      // 打开按钮的反馈必须留在按钮旁边：失败信息若只出现在页顶，点按钮的人看不到。
+      const [openState, setOpenState] = useState({ status: 'idle', detail: '' })
 
       const load = useCallback(async () => {
         const result = await call('list')
@@ -479,8 +485,9 @@ window.__ModuleLoader__.load({
       h('path', { d: 'M12.5 14.5h5' }))
 
       const openVault = async () => {
+        setOpenState({ status: 'working', detail: '' })
         const result = await call('openVault')
-        if (!result.ok) setState((s) => ({ ...s, error: result.error }))
+        setOpenState(result.ok ? { status: 'ok', detail: '' } : { status: 'fail', detail: result.error })
       }
 
       const metaText = `dsh-ssh-vault v${state.version}　·　${t('keyMode')}: ${state.keyMode}`
@@ -494,7 +501,19 @@ window.__ModuleLoader__.load({
               h('div', { style: S.meta, title: metaText }, metaText),
               h('div', { style: S.metaRow },
                 h('span', { style: S.metaPath, title: state.vaultDir }, `${t('vaultDir')}: ${state.vaultDir}`),
-                h('button', { style: S.miniButton, onClick: openVault }, t('openVault'))))
+                h('button', {
+                  style: S.miniButton,
+                  disabled: openState.status === 'working',
+                  onClick: openVault,
+                }, openState.status === 'working' ? t('openWorking') : t('openVault')),
+                openState.status === 'ok' ? h('span', { key: 'open-ok', style: S.okText }, t('openDone')) : null,
+                openState.status === 'fail'
+                  ? h('span', {
+                    key: 'open-fail',
+                    title: openState.detail,
+                    style: { ...S.badText, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                  }, openState.detail)
+                  : null))
             : null),
         h('button', {
           'data-variant': 'primary',
