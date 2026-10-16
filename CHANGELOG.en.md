@@ -6,6 +6,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-10-17
+
+### Added
+
+- **Connection management in Settings** (`Settings → SSH Connections`): list, add, edit and delete hosts
+  without going through the conversation at all. A password typed there travels in a same-origin POST body
+  and **never enters the session log** — cleaner than having the model call
+  `ssh_hosts add password=...`.
+- **Two authentication modes**: password and private key. A key can be uploaded whole; the host writes it
+  into the vault directory and tightens its permissions automatically, so you never have to handle file
+  ACLs. Uploading a public key or a non-key file is rejected on the spot.
+- **Test connection**: runs the same real probe as `ssh_probe` and shows the result inline, failure
+  attribution included.
+- **`/ssh` command in the conversation**: `/ssh` lists every host, `/ssh <alias>...` probes one or several,
+  and the outcome lands in the session as a command node.
+- Added `test/vault-api.mjs` (35 cases) covering the settings API's validation, masking and response shape.
+
+### Changed
+
+- The plugin gained a browser half, `client.js`: zero dependencies, zero build, hand-written React elements
+  requiring only the host-provided `react`. `package.json` now declares `dsh.client` and a `./client` export.
+- Added `lib/vault-api.js`: same-origin JSON routes under the `/ssh-vault/` prefix.
+- `npm test` now includes the settings API regression.
+
 ## [1.5.0] - 2026-10-16
 
 Verified against real targets: 25 end-to-end cases pass (Kali with password auth + Windows 10 with key auth).

@@ -1,0 +1,454 @@
+/**
+ * SSH 保险库的浏览器半边：设置界面的连接管理页。
+ *
+ * 与 Host 侧一样保持零依赖、零构建——这里手写 React 元素，只 require 宿主提供的 'react'。
+ * 数据经同源、document-relative 的 POST 走 `/ssh-vault/*`（见 lib/vault-api.js）。
+ *
+ * 安全性上值得注意的一点：口令通过 HTTP body 提交，**不进入会话日志**，
+ * 这比让模型调用 `ssh_hosts add password=...` 更干净。
+ */
+window.__ModuleLoader__.load({
+  id: 'dsh-ssh-vault',
+  factory(require) {
+    const React = require('react')
+    const h = React.createElement
+    const { useCallback, useEffect, useState } = React
+
+    // —— 文案：按浏览器语言在中英之间选择，避免为一个设置页引入完整的 i18n 依赖 ——
+    const DICT = {
+      zh: {
+        sectionTitle: 'SSH 连接',
+        heading: 'SSH 连接',
+        intro: '集中管理远程主机。地址、端口、账号与口令都保存在加密保险库中，对话里只用别名。',
+        keyMode: '密钥保护',
+        vaultDir: '保险库位置',
+        add: '添加连接',
+        empty: '还没有配置任何主机。点「添加连接」开始。',
+        loading: '加载中…',
+        alias: '别名',
+        host: '主机地址',
+        port: '端口',
+        username: '账号',
+        authType: '认证方式',
+        authPassword: '口令认证',
+        authKey: '密钥认证',
+        password: '密码',
+        passwordKeep: '留空表示保持已保存的密码',
+        keyUpload: '上传私钥文件',
+        keyUploadHint: '私钥会保存到保险库目录并自动收紧权限，无需自己处理文件 ACL',
+        keyUploaded: '已选择',
+        keyPath: '或填写私钥路径（运行 DSH 的机器上的绝对路径）',
+        shell: '远程 shell',
+        description: '备注',
+        tags: '标签（逗号分隔）',
+        save: '保存',
+        cancel: '取消',
+        edit: '编辑',
+        remove: '删除',
+        test: '测试连接',
+        testing: '测试中…',
+        testOk: '连接正常',
+        testFail: '连接失败',
+        confirmRemove: '确定要删除 {alias} 吗？保险库中的凭据会一并移除。',
+        noHostsForTest: '请先添加主机。',
+        saved: '已保存',
+        errorRequired: '请填写必填项。',
+        transportError: '无法连接到宿主：路由不可用。',
+        passwordBadge: '已存密码',
+        noPasswordBadge: '无密码',
+        sudoBadge: 'sudo 口令',
+        keyBadge: '密钥',
+        agentBadge: 'agent',
+        bindAddress: '出口源地址（可选）',
+        updatedAt: '更新于',
+      },
+      en: {
+        sectionTitle: 'SSH Connections',
+        heading: 'SSH Connections',
+        intro: 'Manage remote hosts in one place. Address, port, account and password live in an encrypted vault; the conversation only uses aliases.',
+        keyMode: 'Key protection',
+        vaultDir: 'Vault location',
+        add: 'Add connection',
+        empty: 'No hosts configured yet. Start with “Add connection”.',
+        loading: 'Loading…',
+        alias: 'Alias',
+        host: 'Host address',
+        port: 'Port',
+        username: 'Account',
+        authType: 'Authentication',
+        authPassword: 'Password',
+        authKey: 'Private key',
+        password: 'Password',
+        passwordKeep: 'Leave blank to keep the stored password',
+        keyUpload: 'Upload private key file',
+        keyUploadHint: 'The key is stored in the vault directory with its permissions tightened for you',
+        keyUploaded: 'selected',
+        keyPath: 'Or give a private key path (absolute, on the machine running DSH)',
+        shell: 'Remote shell',
+        description: 'Note',
+        tags: 'Tags (comma separated)',
+        save: 'Save',
+        cancel: 'Cancel',
+        edit: 'Edit',
+        remove: 'Delete',
+        test: 'Test connection',
+        testing: 'Testing…',
+        testOk: 'Connection OK',
+        testFail: 'Connection failed',
+        confirmRemove: 'Delete {alias}? Its credentials are removed from the vault too.',
+        noHostsForTest: 'Add a host first.',
+        saved: 'Saved',
+        errorRequired: 'Fill in the required fields.',
+        transportError: 'Cannot reach the host: route unavailable.',
+        passwordBadge: 'password stored',
+        noPasswordBadge: 'no password',
+        sudoBadge: 'sudo password',
+        keyBadge: 'key',
+        agentBadge: 'agent',
+        bindAddress: 'Source address (optional)',
+        updatedAt: 'updated',
+      },
+    }
+    const LANG = String((typeof navigator !== 'undefined' && navigator.language) || 'zh').toLowerCase().startsWith('zh') ? 'zh' : 'en'
+    const t = (key) => DICT[LANG][key] ?? DICT.zh[key] ?? key
+
+    // —— 主题 token：全部带回退值，token 改名只会让外观降级，不会破坏渲染 ——
+    const C = {
+      text: 'var(--dsw-alias-label-primary, inherit)',
+      textDim: 'var(--dsw-alias-label-secondary, rgba(128,128,128,0.9))',
+      border: 'var(--dsw-alias-border-l1, rgba(128,128,128,0.25))',
+      borderStrong: 'var(--dsw-alias-border-l2, rgba(128,128,128,0.4))',
+      layer: 'var(--dsw-alias-bg-layer-1, transparent)',
+      layer2: 'var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.08))',
+      brand: 'var(--dsw-alias-brand-primary, #4f7cff)',
+      ok: 'var(--dsw-alias-state-success-primary, #2e9e5b)',
+      bad: 'var(--dsw-alias-state-error-primary, #d64545)',
+      warn: 'var(--dsw-alias-state-warn-primary, #c98a12)',
+    }
+
+    const S = {
+      page: { display: 'flex', flexDirection: 'column', gap: '14px', color: C.text, fontSize: '13px', lineHeight: 1.6 },
+      head: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' },
+      h: { margin: 0, fontSize: '15px', fontWeight: 600, color: C.text },
+      intro: { margin: '4px 0 0', color: C.textDim, maxWidth: '62ch' },
+      meta: { marginTop: '6px', color: C.textDim, fontSize: '12px' },
+      button: {
+        appearance: 'none', border: `1px solid ${C.borderStrong}`, background: C.layer, color: C.text,
+        borderRadius: '6px', padding: '5px 11px', fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap',
+      },
+      primary: { borderColor: C.brand, color: '#fff', background: C.brand },
+      danger: { borderColor: C.bad, color: C.bad },
+      card: { border: `1px solid ${C.border}`, borderRadius: '8px', background: C.layer, padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' },
+      cardHead: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+      alias: { fontWeight: 600, fontSize: '13px' },
+      badge: { border: `1px solid ${C.border}`, borderRadius: '999px', padding: '1px 8px', fontSize: '11px', color: C.textDim },
+      kv: { display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 12px', color: C.textDim, fontSize: '12px' },
+      row: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' },
+      form: { border: `1px solid ${C.borderStrong}`, borderRadius: '8px', background: C.layer2, padding: '12px', display: 'flex', flexDirection: 'column', gap: '10px' },
+      fields: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '10px' },
+      field: { display: 'flex', flexDirection: 'column', gap: '3px' },
+      label: { fontSize: '12px', color: C.textDim },
+      input: {
+        border: `1px solid ${C.border}`, borderRadius: '6px', background: C.layer, color: C.text,
+        padding: '5px 8px', fontSize: '12px', font: 'inherit', width: '100%', boxSizing: 'border-box',
+      },
+      hint: { fontSize: '11px', color: C.textDim },
+      error: { color: C.bad, fontSize: '12px' },
+      okText: { color: C.ok, fontSize: '12px', fontWeight: 600 },
+      badText: { color: C.bad, fontSize: '12px', fontWeight: 600 },
+      pre: {
+        margin: 0, padding: '8px', borderRadius: '6px', background: C.layer2, border: `1px solid ${C.border}`,
+        fontSize: '11.5px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+      },
+    }
+
+    /**
+     * 调一次宿主路由。
+     * @param action - 路由末段。
+     * @param payload - JSON 请求体。
+     * @returns `{ ok: true, value }` 或 `{ ok: false, error }`。
+     */
+    async function call(action, payload) {
+      let response
+      try {
+        // document-relative：页面用 <base href="./">，绝对路径会逃出部署前缀。
+        response = await fetch(`ssh-vault/${action}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload ?? {}),
+        })
+      } catch {
+        return { ok: false, error: t('transportError') }
+      }
+      try {
+        const envelope = await response.json()
+        if (envelope && envelope.ok === true) return { ok: true, value: envelope.value }
+        const message = envelope && envelope.error && envelope.error.message ? envelope.error.message : t('transportError')
+        return { ok: false, error: message }
+      } catch {
+        return { ok: false, error: t('transportError') }
+      }
+    }
+
+    /** 把一个文件读成 base64（去掉 data URL 前缀）。 */
+    function readAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const text = String(reader.result ?? '')
+          const comma = text.indexOf(',')
+          resolve(comma >= 0 ? text.slice(comma + 1) : text)
+        }
+        reader.onerror = () => reject(reader.error ?? new Error('read failed'))
+        reader.readAsDataURL(file)
+      })
+    }
+
+    /** 一行表单字段。 */
+    function Field(props) {
+      return h('label', { style: S.field },
+        h('span', { style: S.label }, props.label),
+        props.children,
+        props.hint ? h('span', { style: S.hint }, props.hint) : null)
+    }
+
+    /** 认证方式徽章。 */
+    function authBadges(host) {
+      const badges = []
+      if (host.authType === 'key') badges.push(t('keyBadge'))
+      else if (host.hasPassword) badges.push(t('passwordBadge'))
+      else badges.push(t('noPasswordBadge'))
+      if (host.hasSudoPassword) badges.push(t('sudoBadge'))
+      if (host.credentialRef) badges.push(`credentialRef: ${host.credentialRef}`)
+      return badges
+    }
+
+    /** 新增／编辑表单。 */
+    function HostForm(props) {
+      const existing = props.record
+      const [alias, setAlias] = useState(existing ? existing.alias : '')
+      const [host, setHost] = useState('')
+      const [port, setPort] = useState('22')
+      const [username, setUsername] = useState('')
+      const [authType, setAuthType] = useState(existing ? existing.authType : 'password')
+      const [password, setPassword] = useState('')
+      const [keyPath, setKeyPath] = useState(existing && existing.privateKeyPath ? existing.privateKeyPath : '')
+      const [keyFile, setKeyFile] = useState(null)
+      const [shell, setShell] = useState(existing ? existing.shell : 'bash')
+      const [description, setDescription] = useState(existing ? existing.description : '')
+      const [tags, setTags] = useState(existing && existing.tags.length > 0 ? existing.tags.join(', ') : '')
+      const [bindAddress, setBindAddress] = useState(existing ? existing.bindAddress : '')
+      const [error, setError] = useState('')
+      const [busy, setBusy] = useState(false)
+
+      // 编辑一台已存在的主机时，地址与账号需要先向宿主索取（列表里是脱敏值）。
+      useEffect(() => {
+        if (!existing) return
+        let alive = true
+        call('reveal', { alias: existing.alias }).then((result) => {
+          if (!alive || !result.ok) return
+          setHost(result.value.host ?? '')
+          setPort(String(result.value.port ?? 22))
+          setUsername(result.value.username ?? '')
+        })
+        return () => { alive = false }
+      }, [existing])
+
+      const submit = async () => {
+        setError('')
+        if (alias.trim().length === 0 || host.trim().length === 0 || username.trim().length === 0) {
+          setError(t('errorRequired'))
+          return
+        }
+        if (authType === 'password' && password.length === 0 && !(existing && existing.hasPassword)) {
+          setError(t('errorRequired'))
+          return
+        }
+        setBusy(true)
+        const payload = {
+          alias: alias.trim(),
+          host: host.trim(),
+          port: Number(port),
+          username: username.trim(),
+          authType,
+          shell,
+          description,
+          tags: tags.split(',').map((tag) => tag.trim()).filter((tag) => tag.length > 0),
+          bindAddress,
+        }
+        if (authType === 'password') payload.password = password
+        else {
+          payload.privateKeyPath = keyPath.trim()
+          if (keyFile) {
+            try {
+              payload.privateKeyFile = { name: keyFile.name, base64: await readAsBase64(keyFile) }
+            } catch {
+              setBusy(false)
+              setError(t('transportError'))
+              return
+            }
+          }
+        }
+        const result = await call('save', payload)
+        setBusy(false)
+        if (!result.ok) {
+          setError(result.error)
+          return
+        }
+        props.onDone()
+      }
+
+      return h('div', { style: S.form },
+        h('div', { style: S.fields },
+          h(Field, { label: t('alias') },
+            h('input', { style: S.input, value: alias, disabled: existing !== null, onChange: (e) => setAlias(e.target.value) })),
+          h(Field, { label: t('host') },
+            h('input', { style: S.input, value: host, placeholder: '192.0.2.10', onChange: (e) => setHost(e.target.value) })),
+          h(Field, { label: t('port') },
+            h('input', { style: S.input, value: port, inputMode: 'numeric', onChange: (e) => setPort(e.target.value) })),
+          h(Field, { label: t('username') },
+            h('input', { style: S.input, value: username, onChange: (e) => setUsername(e.target.value) }))),
+
+        h('div', { style: S.row },
+          h('span', { style: S.label }, t('authType')),
+          h('label', { style: S.row },
+            h('input', { type: 'radio', checked: authType === 'password', onChange: () => setAuthType('password') }),
+            t('authPassword')),
+          h('label', { style: S.row },
+            h('input', { type: 'radio', checked: authType === 'key', onChange: () => setAuthType('key') }),
+            t('authKey'))),
+
+        authType === 'password'
+          ? h(Field, { label: t('password'), hint: existing && existing.hasPassword ? t('passwordKeep') : undefined },
+            h('input', { style: S.input, type: 'password', value: password, autoComplete: 'new-password', onChange: (e) => setPassword(e.target.value) }))
+          : h('div', { style: S.fields },
+            h(Field, { label: t('keyUpload'), hint: t('keyUploadHint') },
+              h('input', {
+                style: S.input,
+                type: 'file',
+                onChange: (e) => setKeyFile(e.target.files && e.target.files[0] ? e.target.files[0] : null),
+              }),
+              keyFile ? h('span', { style: S.hint }, `${t('keyUploaded')}: ${keyFile.name}`) : null),
+            h(Field, { label: t('keyPath') },
+              h('input', { style: S.input, value: keyPath, placeholder: 'C:\\keys\\id_rsa', onChange: (e) => setKeyPath(e.target.value) }))),
+
+        h('div', { style: S.fields },
+          h(Field, { label: t('shell') },
+            h('input', { style: S.input, value: shell, placeholder: 'bash', onChange: (e) => setShell(e.target.value) })),
+          h(Field, { label: t('bindAddress') },
+            h('input', { style: S.input, value: bindAddress, onChange: (e) => setBindAddress(e.target.value) })),
+          h(Field, { label: t('description') },
+            h('input', { style: S.input, value: description, onChange: (e) => setDescription(e.target.value) })),
+          h(Field, { label: t('tags') },
+            h('input', { style: S.input, value: tags, onChange: (e) => setTags(e.target.value) }))),
+
+        error.length > 0 ? h('div', { style: S.error }, error) : null,
+        h('div', { style: S.row },
+          h('button', { style: { ...S.button, ...S.primary }, disabled: busy, onClick: submit }, t('save')),
+          h('button', { style: S.button, disabled: busy, onClick: props.onCancel }, t('cancel'))))
+    }
+
+    /** 设置页主体。 */
+    function SshVaultSettings() {
+      const [state, setState] = useState({ status: 'loading', hosts: [], error: '', keyMode: '', vaultDir: '' })
+      const [form, setForm] = useState(null)
+      const [tests, setTests] = useState({})
+
+      const load = useCallback(async () => {
+        const result = await call('list')
+        if (result.ok) {
+          setState({ status: 'ready', hosts: result.value.hosts, error: '', keyMode: result.value.keyMode, vaultDir: result.value.vaultDir })
+        } else {
+          setState({ status: 'ready', hosts: [], error: result.error, keyMode: '', vaultDir: '' })
+        }
+      }, [])
+
+      useEffect(() => { load() }, [load])
+
+      const runTest = async (alias) => {
+        setTests((map) => ({ ...map, [alias]: { status: 'running' } }))
+        const result = await call('test', { alias })
+        setTests((map) => ({
+          ...map,
+          [alias]: result.ok
+            ? { status: result.value.ok ? 'ok' : 'fail', detail: result.value.detail, notes: result.value.notes ?? [] }
+            : { status: 'fail', detail: result.error, notes: [] },
+        }))
+      }
+
+      const removeHost = async (alias) => {
+        if (typeof window !== 'undefined' && typeof window.confirm === 'function'
+          && !window.confirm(t('confirmRemove').replace('{alias}', alias))) return
+        const result = await call('remove', { alias })
+        if (!result.ok) {
+          setState((s) => ({ ...s, error: result.error }))
+          return
+        }
+        await load()
+      }
+
+      const header = h('div', { style: S.head },
+        h('div', null,
+          h('h3', { style: S.h }, t('heading')),
+          h('p', { style: S.intro }, t('intro')),
+          state.status === 'ready'
+            ? h('div', { style: S.meta }, `${t('keyMode')}: ${state.keyMode}　·　${t('vaultDir')}: ${state.vaultDir}`)
+            : null),
+        h('button', {
+          style: { ...S.button, ...S.primary },
+          onClick: () => setForm({ mode: 'new', record: null }),
+        }, t('add')))
+
+      return h('div', { style: S.page },
+        header,
+        state.error.length > 0 ? h('div', { style: S.error }, state.error) : null,
+        form !== null ? h(HostForm, {
+          record: form.record,
+          onDone: async () => { setForm(null); await load() },
+          onCancel: () => setForm(null),
+        }) : null,
+        state.status === 'loading'
+          ? h('div', { style: { color: C.textDim } }, t('loading'))
+          : state.hosts.length === 0 && form === null
+            ? h('div', { style: { color: C.textDim } }, t('empty'))
+            : state.hosts.map((host) => {
+              const test = tests[host.alias]
+              return h('div', { key: host.alias, style: S.card },
+                h('div', { style: S.cardHead },
+                  h('span', { style: S.alias }, host.alias),
+                  ...authBadges(host).map((badge, index) => h('span', { key: index, style: S.badge }, badge)),
+                  host.updatedAt ? h('span', { style: { ...S.badge, borderColor: 'transparent' } }, `${t('updatedAt')} ${String(host.updatedAt).slice(0, 19).replace('T', ' ')}`) : null),
+                h('div', { style: S.kv },
+                  h('span', null, `${host.host}:${host.port}`),
+                  h('span', null, host.username),
+                  h('span', null, 'shell'),
+                  h('span', null, host.shell),
+                  ...(host.description ? [h('span', null, t('description')), h('span', null, host.description)] : []),
+                  ...(host.tags.length > 0 ? [h('span', null, t('tags')), h('span', null, host.tags.join(', '))] : [])),
+                h('div', { style: S.row },
+                  h('button', { style: S.button, disabled: test && test.status === 'running', onClick: () => runTest(host.alias) },
+                    test && test.status === 'running' ? t('testing') : t('test')),
+                  h('button', { style: S.button, onClick: () => setForm({ mode: 'edit', record: host }) }, t('edit')),
+                  h('button', { style: { ...S.button, ...S.danger }, onClick: () => removeHost(host.alias) }, t('remove'))),
+                test && test.status !== 'running'
+                  ? h('div', null,
+                    h('div', { style: test.status === 'ok' ? S.okText : S.badText }, test.status === 'ok' ? t('testOk') : t('testFail')),
+                    test.detail ? h('pre', { style: S.pre }, test.detail) : null,
+                    test.notes && test.notes.length > 0 ? h('pre', { style: S.pre }, test.notes.join('\n')) : null)
+                  : null)
+            }))
+    }
+
+    return {
+      inject: ['slots'],
+      apply(ctx) {
+        ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'ssh-vault',
+          order: 20,
+          label: () => t('sectionTitle'),
+        }, SshVaultSettings))
+      },
+    }
+  },
+})

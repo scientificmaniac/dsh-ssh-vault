@@ -15,6 +15,7 @@ import { readFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
 import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, probeCommand, runRemote, shellKind, transferFile } from './lib/ssh.js'
+import { API_PREFIX, createVaultApi } from './lib/vault-api.js'
 import { Vault, defaultVaultDir, maskHost, maskUser } from './lib/vault.js'
 
 /** 插件名（同时是 Loader 行的 id）。 */
@@ -759,6 +760,84 @@ export function apply(ctx, config = {}) {
         : [header, renderRun(result)].join('\n')
     },
   })))
+
+  /**
+   * 一次连接自检，供设置界面的「测试连接」与对话里的 `/ssh` 复用。
+   * @param alias - 主机别名。
+   * @returns 归一化的探测结果。
+   */
+  const probeHost = async (alias) => {
+    try {
+      const record = await requireHost(alias)
+      const connection = await connectionFor(record, normalizeTimeout(undefined), undefined)
+      const result = await runRemote({ ...connection, command: probeCommand(record.shell) })
+      if (result.exitCode === 0) {
+        const facts = (result.stdout ?? '')
+          .split('\n')
+          .map((line) => line.replace(/^##(\w+)##\s*/, (_m, key) => `${key}: `))
+          .map((line) => line.replace(/^(\w+):\s*$/, ''))
+          .filter((line) => line.trim().length > 0)
+        return { ok: true, detail: facts.join('\n'), notes: result.notes ?? [], exitCode: 0 }
+      }
+      return {
+        ok: false,
+        detail: (result.stderr ?? '').trim() || '(no output)',
+        notes: result.notes ?? [],
+        exitCode: result.exitCode,
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+        notes: [],
+        exitCode: null,
+      }
+    }
+  }
+
+  // —— 设置界面的管理接口：口令经 HTTP body 提交，不进入会话日志 ——
+  ctx.inject(['webServer'], (webCtx) => {
+    const api = createVaultApi({ vault, vaultDir, probe: probeHost, logger: ctx.logger })
+    webCtx.effect(() => webCtx.webServer.register({ kind: 'prefix', path: API_PREFIX, handler: api }))
+  })
+
+  // —— 对话里的 `/ssh <别名>` 快捷调用 ——
+  ctx.inject(['commands'], (cmdCtx) => {
+    cmdCtx.effect(() => cmdCtx.commands.register({
+      name: 'ssh',
+      description: '列出已配置的 SSH 主机，或探测指定主机以确认可用',
+      input: { hint: '[别名...] 省略则列出全部主机' },
+      handler: async (invocation) => {
+        const names = invocation.rawInput.trim().split(/\s+/).filter((part) => part.length > 0)
+        try {
+          if (names.length === 0) {
+            const hosts = await vault.list()
+            if (hosts.length === 0) {
+              return { kind: 'success', text: 'SSH 保险库为空。可在「设置 → SSH 连接」中添加主机。' }
+            }
+            const lines = hosts.map((record) => `- ${record.alias}（${maskHost(record.host)}:${record.port}，`
+              + `${maskUser(record.username)}，${record.auth?.type ?? 'agent'}，shell ${record.shell ?? 'bash'}）`)
+            return {
+              kind: 'success',
+              text: `已配置 ${hosts.length} 台 SSH 主机：\n${lines.join('\n')}\n\n用 \`/ssh <别名>\` 探测其中一台。`,
+            }
+          }
+          const sections = []
+          for (const alias of names) {
+            const result = await probeHost(alias)
+            sections.push([
+              result.ok ? `✅ ${alias}` : `❌ ${alias}`,
+              result.detail,
+              ...(result.notes ?? []),
+            ].filter((line) => typeof line === 'string' && line.length > 0).join('\n'))
+          }
+          return { kind: 'success', text: sections.join('\n\n') }
+        } catch (error) {
+          return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+        }
+      },
+    }))
+  })
 }
 
 /**
