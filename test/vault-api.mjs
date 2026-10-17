@@ -295,6 +295,23 @@ async function invoke(handler, url, body, method) {
 
 await rm(VAULT_DIR, { recursive: true, force: true })
 
+// —— test 必须走短超时：设置页会给每台主机自动体检，一条不通的主机不能拖住整页 ——
+{
+  const vault = memoryVault({ demo: sampleRecord })
+  const seen = []
+  const handler = createVaultApi({
+    vault,
+    vaultDir: VAULT_DIR,
+    probe: async (alias, timeoutMs) => {
+      seen.push({ alias, timeoutMs })
+      return { ok: true, detail: '', notes: [] }
+    },
+  })
+  const result = await invoke(handler, `${API_PREFIX}/test`, { alias: 'demo' })
+  check('test 成功返回', result.envelope.ok === true, JSON.stringify(result.envelope))
+  check('test 把短超时传给 probe', seen.length === 1 && seen[0].timeoutMs === 8000, JSON.stringify(seen))
+}
+
 console.log(`${passed} 项通过，${failures.length} 项失败`)
 for (const failure of failures) console.error(`FAIL: ${failure}`)
 if (failures.length > 0) process.exit(1)

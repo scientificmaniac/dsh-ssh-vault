@@ -62,6 +62,7 @@ window.__ModuleLoader__.load({
         openVault: '用资源管理器打开',
         openWorking: '正在打开…',
         openDone: '已打开',
+        healthIdle: '尚未检测',
         keyAcceptHint: '支持 OpenSSH（id_rsa / id_ed25519，通常没有扩展名）与 PEM（.pem / .key）。'
           + '若文件选择器里看不到你的私钥，把类型切到「所有文件」即可。',
         keyIsPublic: '这是公钥，不能用于登录。请选择不带 .pub 后缀的私钥文件。',
@@ -125,6 +126,7 @@ window.__ModuleLoader__.load({
         openVault: 'Open in file manager',
         openWorking: 'Opening…',
         openDone: 'Opened',
+        healthIdle: 'Not checked yet',
         keyAcceptHint: 'OpenSSH keys (id_rsa / id_ed25519, usually without an extension) and PEM keys (.pem / .key) '
           + 'are accepted. If your key is not listed, switch the file type filter to “All files”.',
         keyIsPublic: 'This is a public key; it cannot be used to log in. Choose the private key without the .pub suffix.',
@@ -234,6 +236,27 @@ window.__ModuleLoader__.load({
         fontSize: '11.5px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '200px', overflow: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
       },
       footer: { color: C.textDimmed, fontSize: '11px' },
+      dot: { width: '8px', height: '8px', borderRadius: '50%', flex: 'none' },
+    }
+
+    /** 连通状态点：灰=未测、黄=检测中、绿=通、红=不通。 */
+    const HEALTH_DOT = {
+      idle: { background: C.textDim },
+      checking: { background: 'var(--dsw-alias-state-warn-primary, #c98a12)' },
+      ok: { background: C.ok },
+      fail: { background: C.bad },
+    }
+
+    /**
+     * 连通状态点的悬停说明。
+     * @param entry - 该主机的体检结果，未检测时为 undefined。
+     * @returns 说明文本。
+     */
+    function healthTitle(entry) {
+      if (entry === undefined) return t('healthIdle')
+      if (entry.status === 'checking') return t('testing')
+      const head = entry.status === 'ok' ? t('testOk') : t('testFail')
+      return entry.detail ? `${head}：${entry.detail}` : head
     }
 
     // inline style 表达不了的状态。选择器与宿主的 hover / active / disabled 行为对齐：
@@ -503,6 +526,8 @@ window.__ModuleLoader__.load({
       const [tests, setTests] = useState({})
       // 打开按钮的反馈必须留在按钮旁边：失败信息若只出现在页顶，点按钮的人看不到。
       const [openState, setOpenState] = useState({ status: 'idle', detail: '' })
+      /** 每台主机的连通体检结果：alias -> { status, detail }。 */
+      const [health, setHealth] = useState({})
 
       const load = useCallback(async () => {
         const result = await call('list')
@@ -521,6 +546,31 @@ window.__ModuleLoader__.load({
       }, [])
 
       useEffect(() => { load() }, [load])
+
+      // 卡片一出现就各自体检一次。串行执行：同时开一批 SSH 连接对远端不友好，而且
+      // 一台不通的主机（Host 侧给了 8 秒超时）会让并发的其余连接一起挤在超时上。
+      const aliasKey = state.hosts.map((host) => host.alias).join(',')
+      useEffect(() => {
+        if (state.status !== 'ready' || state.hosts.length === 0) return undefined
+        let cancelled = false
+        const run = async () => {
+          for (const host of state.hosts) {
+            if (cancelled) return
+            setHealth((map) => ({ ...map, [host.alias]: { status: 'checking' } }))
+            const result = await call('test', { alias: host.alias })
+            if (cancelled) return
+            setHealth((map) => ({
+              ...map,
+              [host.alias]: result.ok
+                ? { status: result.value.ok ? 'ok' : 'fail', detail: result.value.detail }
+                : { status: 'fail', detail: result.error },
+            }))
+          }
+        }
+        run()
+        return () => { cancelled = true }
+        // 用 aliasKey 而不是 state.hosts：数组引用每次渲染都变，会变成无限重测。
+      }, [aliasKey, state.status])
 
       const runTest = async (alias) => {
         setTests((map) => ({ ...map, [alias]: { status: 'running' } }))
@@ -615,6 +665,13 @@ window.__ModuleLoader__.load({
               return h('div', { key: host.alias, style: S.hostBlock },
                 h('div', { style: S.card },
                   h('div', { style: S.cardHead },
+                    h('span', {
+                      style: {
+                        ...S.dot,
+                        ...HEALTH_DOT[health[host.alias] === undefined ? 'idle' : health[host.alias].status],
+                      },
+                      title: healthTitle(health[host.alias]),
+                    }),
                     h('span', { style: S.alias }, host.alias),
                     ...authBadges(host).map((badge, index) => h('span', { key: index, style: S.badge }, badge)),
                     host.updatedAt ? h('span', { style: { ...S.badge, borderColor: 'transparent' } }, `${t('updatedAt')} ${String(host.updatedAt).slice(0, 19).replace('T', ' ')}`) : null),

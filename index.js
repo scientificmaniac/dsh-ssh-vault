@@ -805,14 +805,15 @@ export function apply(ctx, config = {}) {
   })))
 
   /**
-   * 一次连接自检，供设置界面的「测试连接」与对话里的 `/ssh` 复用。
+   * 一次连接自检，供设置界面的「测试连接」、卡片自动体检与对话里的 `/ssh` 复用。
    * @param alias - 主机别名。
+   * @param timeoutMs - 可选超时；设置页体检会传入一个短值，避免一台不通的主机挂很久。
    * @returns 归一化的探测结果。
    */
-  const probeHost = async (alias) => {
+  const probeHost = async (alias, timeoutMs) => {
     try {
       const record = await requireHost(alias)
-      const connection = await connectionFor(record, normalizeTimeout(undefined), undefined)
+      const connection = await connectionFor(record, normalizeTimeout(timeoutMs), undefined)
       const result = await runRemote({ ...connection, command: probeCommand(record.shell) })
       if (result.exitCode === 0) {
         const facts = (result.stdout ?? '')
