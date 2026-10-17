@@ -851,6 +851,10 @@ export function apply(ctx, config = {}) {
   const healthCache = new Map()
   /** 后台体检间隔。 */
   const HEALTH_REFRESH_MS = 5 * 60 * 1000
+  /** `/hosts` 里分号后那条命令的超时——它可能是 apt upgrade 这类长活。 */
+  const HOSTS_COMMAND_TIMEOUT_MS = 120000
+  /** `/hosts` 单台主机最多回显多少行输出，防止一条命令刷满整段对话。 */
+  const HOSTS_OUTPUT_MAX_LINES = 40
 
   /**
    * 体检全部主机并写入缓存。
@@ -900,16 +904,18 @@ export function apply(ctx, config = {}) {
     disposeSshCommand = cmdCtx.commands.register({
       name: 'hosts',
       description: '列出已配置的 SSH 主机与在线状态，或探测指定主机以确认可用',
-      input: { hint: '别名,别名;（逗号分隔多台，分号后内容忽略）' },
+      input: { hint: '别名,别名; 命令（逗号分隔多台，分号后是要执行的命令）' },
       handler: async (invocation) => {
-        // 参数只认「逗号分隔 + 分号结尾」。分号之后的都是用户自己的话，直接丢弃——
-        // 这样 `/hosts kali,win10; 试一下 apt update` 不会把后面的词当成主机名。
+        // 格式：`/hosts 别名[,别名][; 命令]`。
+        // 分号之前是主机选择器；分号之后是**要在每台可达主机上执行的命令**。
         // 中英文标点都认：中文输入法下打出来的是全角「，」和「；」。
-        const head = invocation.rawInput.split(/[;；]/)[0]
-        const names = head.split(/[,，]/).map((part) => part.trim()).filter((part) => part.length > 0)
-        const usage = '用法：`/hosts 别名,别名;备注` —— 逗号分隔多台（中英文逗号都行），分号之后的内容会被忽略。'
+        const segments = invocation.rawInput.split(/[;；]/)
+        const names = segments[0].split(/[,，]/).map((part) => part.trim()).filter((part) => part.length > 0)
+        // 命令里若还有分号，原样拼回去，只把第一个分号当作分隔。
+        const remoteCommand = segments.slice(1).join(';').trim()
+        const usage = '用法：`/hosts 别名,别名; 命令` —— 逗号分隔多台（中英文都行），分号之后是要执行的命令，留空则只探测。'
         try {
-          if (names.length === 0) {
+          if (names.length === 0 && remoteCommand.length === 0) {
             const hosts = await vault.list()
             if (hosts.length === 0) {
               return { kind: 'success', text: 'SSH 保险库为空。可在「设置 → SSH 连接」中添加主机。' }
@@ -934,6 +940,9 @@ export function apply(ctx, config = {}) {
             sections.push(usage)
             return { kind: offline.length > 0 ? 'error' : 'success', text: sections.join('\n\n') }
           }
+          if (names.length === 0) {
+            return { kind: 'error', text: `分号前没有指定主机。${usage}` }
+          }
 
           // 先剔掉不存在的别名，免得把「找不到」混进连接失败里。
           const known = new Set((await vault.list()).map((host) => host.alias))
@@ -942,15 +951,43 @@ export function apply(ctx, config = {}) {
           let anyFailed = false
           for (const alias of names) {
             if (!known.has(alias)) continue
-            const result = await probeHost(alias, SETTINGS_PROBE_TIMEOUT_MS)
-            healthCache.set(alias, { ok: result.ok === true, at: Date.now() })
-            if (result.ok) {
-              // 多行 facts 压成一行：一台机器不该把整段对话撑满。
-              const facts = result.detail.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
-              lines.push(`${alias}${facts.length > 0 ? ` — ${facts.join(' · ')}` : ''}`)
-            } else {
+            const probe = await probeHost(alias, SETTINGS_PROBE_TIMEOUT_MS)
+            healthCache.set(alias, { ok: probe.ok === true, at: Date.now() })
+            if (!probe.ok) {
               anyFailed = true
-              lines.push(`${alias} — ${result.detail.split('\n')[0].trim() || '连接失败'}`)
+              lines.push(`${alias} — ${probe.detail.split('\n')[0].trim() || '连接失败'}`)
+              continue
+            }
+            // 多行 facts 压成一行：一台机器不该把整段对话撑满。
+            const facts = probe.detail.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
+            lines.push(`${alias}${facts.length > 0 ? ` — ${facts.join(' · ')}` : ''}`)
+            if (remoteCommand.length === 0) continue
+
+            lines.push(`  $ ${remoteCommand}`)
+            const record = await requireHost(alias)
+            // 命令以 sudo 开头就预置 sudo 缓存：否则非交互 SSH 下会干等密码直到超时。
+            let sudoPassword
+            if (/^\s*sudo(\s|$)/.test(remoteCommand) && shellKind(record.shell) === 'posix') {
+              const resolved = await resolveSudoPassword(record)
+              sudoPassword = resolved.value
+            }
+            const connection = await connectionFor(record, normalizeTimeout(HOSTS_COMMAND_TIMEOUT_MS), undefined)
+            const run = await runRemote({ ...connection, command: remoteCommand, sudoPassword })
+            const output = [run.stdout, run.stderr]
+              .filter((part) => typeof part === 'string' && part.trim().length > 0)
+              .join('\n')
+              .trim()
+            if (output.length > 0) {
+              const clipped = output.split('\n').slice(0, HOSTS_OUTPUT_MAX_LINES)
+              lines.push(clipped.map((line) => `  ${line}`).join('\n'))
+              if (output.split('\n').length > HOSTS_OUTPUT_MAX_LINES) lines.push(`  …（输出已截断）`)
+            }
+            if (run.timedOut === true) {
+              anyFailed = true
+              lines.push(`  [超时：${HOSTS_COMMAND_TIMEOUT_MS}ms 内未结束]`)
+            } else if (run.exitCode !== 0 && run.exitCode !== null) {
+              anyFailed = true
+              lines.push(`  [exit ${run.exitCode}]`)
             }
           }
           if (unknown.length > 0) {

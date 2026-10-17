@@ -127,7 +127,8 @@ Windows OpenSSH 9.x 支持 `SSH_ASKPASS_REQUIRE=force`：没有终端时改用 `
 ```
 /hosts               列出全部已配置主机
 /hosts kali          探测一台主机并显示结果
-/hosts kali,win10;   一次探测多台；分号之后可接自己的备注
+/hosts kali,win10;   一次探测多台（中英文逗号都行）
+/hosts kali; apt update  在 kali 上执行命令；多台则依次执行
 ```
 
 命令在宿主执行，结果会作为 command 节点进入会话，模型因此知道你刚激活了哪套环境。

@@ -136,7 +136,8 @@ be seen in a process list) and never on disk.
 ```
 /hosts               list every configured host
 /hosts kali          probe one host and show the result
-/hosts kali,win10;    probe several at once; anything after the semicolon is ignored
+/hosts kali,win10;    probe several at once (either comma works)
+/hosts kali; apt update  run a command on kali; with several hosts it runs on each
 ```
 
 The command runs on the host and its outcome lands in the session as a command node, so the model sees
