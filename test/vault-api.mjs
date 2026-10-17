@@ -312,6 +312,31 @@ await rm(VAULT_DIR, { recursive: true, force: true })
   check('test 把短超时传给 probe', seen.length === 1 && seen[0].timeoutMs === SETTINGS_PROBE_TIMEOUT_MS, JSON.stringify(seen))
 }
 
+// —— 改名：凭据随记录搬迁，旧记录被删掉 ——
+{
+  const vault = memoryVault({ demo: { ...sampleRecord } })
+  const handler = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
+
+  const renamed = await invoke(handler, `${API_PREFIX}/save`, {
+    alias: 'renamed', renameFrom: 'demo', host: '192.0.2.10', port: 22, username: 'root', authType: 'password', password: '',
+  })
+  check('改名成功', renamed.envelope.ok === true, JSON.stringify(renamed.envelope))
+  check('改名后沿用原口令', vault.hosts.renamed?.auth?.password === 'stored-secret', JSON.stringify(vault.hosts.renamed?.auth))
+  check('改名后旧记录已删除', vault.hosts.demo === undefined, JSON.stringify(Object.keys(vault.hosts)))
+
+  const ghost = await invoke(handler, `${API_PREFIX}/save`, {
+    alias: 'other', renameFrom: 'ghost', host: '192.0.2.10', port: 22, username: 'root', authType: 'password', password: 'x',
+  })
+  check('改名源不存在时报错', ghost.envelope.ok === false, JSON.stringify(ghost.envelope))
+
+  vault.hosts.taken = { ...sampleRecord, alias: 'taken' }
+  const occupied = await invoke(handler, `${API_PREFIX}/save`, {
+    alias: 'taken', renameFrom: 'renamed', host: '192.0.2.10', port: 22, username: 'root', authType: 'password', password: '',
+  })
+  check('目标别名被占用时报错', occupied.envelope.ok === false, JSON.stringify(occupied.envelope))
+  check('占用失败时不破坏原记录', vault.hosts.renamed !== undefined && vault.hosts.taken?.alias === 'taken', JSON.stringify(Object.keys(vault.hosts)))
+}
+
 console.log(`${passed} 项通过，${failures.length} 项失败`)
 for (const failure of failures) console.error(`FAIL: ${failure}`)
 if (failures.length > 0) process.exit(1)

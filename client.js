@@ -409,6 +409,8 @@ window.__ModuleLoader__.load({
         setBusy(true)
         const payload = {
           alias: alias.trim(),
+          // 编辑时带上旧别名：改名要靠它定位原记录，凭据、私钥路径、备注才会跟着搬过去。
+          ...(existing !== null ? { renameFrom: existing.alias } : {}),
           host: host.trim(),
           port: Number(port),
           username: username.trim(),
@@ -444,7 +446,7 @@ window.__ModuleLoader__.load({
       return h('div', { style: S.form },
         h('div', { style: S.fields },
           h(Field, { label: t('alias') },
-            h('input', { style: S.input, value: alias, disabled: existing !== null, onChange: (e) => setAlias(e.target.value) })),
+            h('input', { style: S.input, value: alias, onChange: (e) => setAlias(e.target.value) })),
           h(Field, { label: t('host') },
             h('input', { style: S.input, value: host, placeholder: '192.0.2.10', onChange: (e) => setHost(e.target.value) })),
           h(Field, { label: t('port') },
