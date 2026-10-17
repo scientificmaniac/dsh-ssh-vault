@@ -828,6 +828,12 @@ window.__ModuleLoader__.load({
         marginLeft: 'auto', flex: 'none', padding: '0 6px', borderRadius: '999px',
         border: `0.5px solid ${C.border}`, fontSize: '10.5px', color: C.textDim,
       },
+      /** 居中的段名徽章：绝对定位到标题栏正中，不受左右两项的宽度影响。 */
+      badgeCentered: {
+        position: 'absolute', left: '50%', transform: 'translateX(-50%)',
+        flex: 'none', padding: '0 6px', borderRadius: '999px',
+        border: `0.5px solid ${C.border}`, fontSize: '10.5px', color: C.textDim,
+      },
     }
 
     /**
@@ -914,13 +920,14 @@ window.__ModuleLoader__.load({
       }
       return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
         ...sections.map((section, index) => h('div', { key: index, style: T.card },
-          h('div', { style: T.head },
+          // 段名居中：它是这张卡的身份，不该和右侧的「有失败」挤在同一条对齐线上。
+          h('div', { style: { ...T.head, position: 'relative' } },
             h('span', {
               style: section.failed ? T.dotError : running ? T.dotRunning : T.dotOk,
               'aria-hidden': true,
             }),
             h('span', { style: T.headText }, index === 0 ? `/${name}` : section.title),
-            index === 0 ? h('span', { style: T.statusBadge }, section.title) : null,
+            index === 0 ? h('span', { style: T.badgeCentered }, section.title) : null,
             section.failed ? h('span', { style: T.statusBadge }, '有失败') : null),
           section.body.length > 0
             ? h('pre', { style: T.pre }, section.body)
