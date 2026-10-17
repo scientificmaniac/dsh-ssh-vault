@@ -14,7 +14,7 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
-import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, parseExitStatus, probeCommand, renderTerminalBlock, runRemote, shellKind, transferFile } from './lib/ssh.js'
+import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, looksLikeNaturalLanguage, parseExitStatus, probeCommand, renderTerminalBlock, runRemote, shellKind, transferFile } from './lib/ssh.js'
 import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi } from './lib/vault-api.js'
 import { Vault, defaultVaultDir, maskHost, maskUser } from './lib/vault.js'
 
@@ -919,18 +919,30 @@ export function apply(ctx, config = {}) {
      */
     disposeSshCommand = cmdCtx.commands.register({
       name: 'hosts',
-      description: '列出已配置的 SSH 主机与在线状态，或探测指定主机以确认可用',
-      input: { hint: '别名,别名; 命令（逗号分隔多台，分号后是要执行的命令）' },
+      description: '列出已配置的 SSH 主机与在线状态，或探测指定主机、在指定主机上执行 shell 命令',
+      input: { hint: '别名,别名; shell 命令（自然语言请直接说，不要加 /hosts）' },
       handler: async (invocation) => {
-        // 格式：`/hosts 别名[,别名][; 命令]`。
-        // 分号之前是主机选择器；分号之后是**要在每台可达主机上执行的命令**。
+        // 格式：`/hosts 别名[,别名][; shell 命令]`。
+        // 分号之前是主机选择器；分号之后**如果是 shell 命令**就在每台可达主机上执行。
         // 中英文标点都认：中文输入法下打出来的是全角「，」和「；」。
         const segments = invocation.rawInput.split(/[;；]/)
         const names = segments[0].split(/[,，]/).map((part) => part.trim()).filter((part) => part.length > 0)
         // 命令里若还有分号，原样拼回去，只把第一个分号当作分隔。
         const remoteCommand = segments.slice(1).join(';').trim()
-        const usage = '用法：`/hosts 别名,别名; 命令` —— 逗号分隔多台（中英文都行），分号之后是要执行的命令，留空则只探测。'
+        const usage = '用法：`/hosts 别名,别名; shell 命令` —— 逗号分隔多台（中英文都行），分号之后是要执行的命令，留空则只探测。'
         try {
+          // 分号后不一定是命令。命令 handler 的产出不会回流给模型，所以这里**不能**把
+          // 一句中文当 shell 命令硬跑——那只会得到一条看不懂的语法错误。识别出来就停下，
+          // 把话交还给用户，让它在下一轮以自然语言发给模型。
+          if (remoteCommand.length > 0 && looksLikeNaturalLanguage(remoteCommand)) {
+            return {
+              kind: 'success',
+              text: `「${remoteCommand}」看起来是自然语言，不是 shell 命令，我没有执行它。\n\n`
+                + '命令的运行结果不会回流给我（模型），所以这种请求不能塞进分号——把这句话直接发给对话就行，'
+                + '我会自己挑主机并执行。\n\n'
+                + `如果确实要跑命令，写成：\`/hosts ${names.length > 0 ? names.join(',') : '<别名>'}; <shell 命令>\``,
+            }
+          }
           if (names.length === 0 && remoteCommand.length === 0) {
             const hosts = await vault.list()
             if (hosts.length === 0) {

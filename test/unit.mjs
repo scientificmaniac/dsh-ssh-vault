@@ -6,7 +6,7 @@
  *
  * 运行：node test/unit.mjs
  */
-import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, parseExitStatus, renderTerminalBlock, runProcess, sudoPrelude } from '../lib/ssh.js'
+import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, looksLikeNaturalLanguage, parseExitStatus, renderTerminalBlock, runProcess, sudoPrelude } from '../lib/ssh.js'
 
 let passed = 0
 const failures = []
@@ -193,6 +193,21 @@ check('detach 告知存活查询方式', detachScript.includes('ALIVE'), detachS
   check('结尾多余换行被去掉', renderTerminalBlock('out\n\n\n') === '```console\nout\n```', JSON.stringify(renderTerminalBlock('out\n\n\n')))
   check('空输出不留空白行', renderTerminalBlock('') === '```console\n\n```', JSON.stringify(renderTerminalBlock('')))
   check('非字符串输入也能渲染', renderTerminalBlock(42).includes('42'), JSON.stringify(renderTerminalBlock(42)))
+}
+
+// —— 分号后是命令还是自然语言 ——
+{
+  // 中文句子：应当交还给用户，不能当成 shell 命令硬跑。
+  check('中文短句算自然语言', looksLikeNaturalLanguage('帮我看看磁盘空间'), '中文短句')
+  check('中英混排也算自然语言', looksLikeNaturalLanguage('查一下 docker 状态'), '中英混排')
+
+  // 明确的 shell 命令不因为带中文参数就被误判。
+  check('带中文参数的 echo 仍是命令', !looksLikeNaturalLanguage('echo 你好'), 'echo 中文参数')
+  check('管道仍是命令', !looksLikeNaturalLanguage('cat /etc/passwd | grep 中文'), '管道')
+  check('重定向仍是命令', !looksLikeNaturalLanguage('ls > 清单.txt'), '重定向')
+  check('路径前缀仍是命令', !looksLikeNaturalLanguage('./中文脚本.sh'), '路径')
+  check('纯 ASCII 命令不是自然语言', !looksLikeNaturalLanguage('apt update'), 'apt update')
+  check('空串不算自然语言', !looksLikeNaturalLanguage('   '), '空白')
 }
 
 console.log(`${passed} 项通过，${failures.length} 项失败`)
