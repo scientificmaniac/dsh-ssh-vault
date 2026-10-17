@@ -8,150 +8,265 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Nothing pending.
+
+## [1.13.0] - 2026-10-17
+
+### Added
+
+- **`/hosts` distinguishes commands from prose.** Text after the semicolon that reads as
+  natural language is no longer executed as shell; the command stops and hands the sentence
+  back to the conversation, because command output never reaches the model.
+- `scripts/dhcp-reserve-kali.ps1`, an idempotent helper that pins a VM's MAC to a fixed
+  address in VMware's DHCP configuration.
+
 ### Changed
 
-- **Documentation language layout.** `README.md` already put English first with a
-  `README.zh-CN.md` translation, but `CHANGELOG`, `CONTRIBUTING` and `SECURITY` did not: their
-  unsuffixed file was Chinese and the English copy sat in an `.en.md` alongside it. All three
-  now follow the README convention — the bare name is English, the translation carries the
-  `.zh-CN` suffix.
+- **Documentation rewritten.** Both READMEs are now reference documents rather than a
+  narrative of the build-out, with badges, a Mermaid data-flow diagram, and sections for
+  architecture, extension points, lifecycle, limits and the security boundary.
+- **English is the primary language for every top-level document.** `CHANGELOG`,
+  `CONTRIBUTING` and `SECURITY` used to carry Chinese in the unsuffixed `.md` with English in
+  an `.en.md`; all three now match the README convention — bare name is English, the
+  translation carries the `.zh-CN` suffix.
+
+## [1.12.3] - 2026-10-17
+
+### Fixed
+
+- The section label in a `/hosts` card is centred, instead of lining up with a failure badge
+  on the right.
+
+## [1.12.2] - 2026-10-17
+
+### Fixed
+
+- **Each `/hosts` card lights its own status.** Both cards previously read one flag derived
+  from the whole command, so a reachable host with a failing command turned the connectivity
+  card red as well.
+
+## [1.12.1] - 2026-10-17
+
+### Added
+
+- `/hosts` output splits into two cards: reachability and command execution.
+
+## [1.12.0] - 2026-10-17
+
+### Added
+
+- **The text after the semicolon is executed on every reachable host.** `/hosts kali; apt
+  update` probes kali and then runs the command there. A command starting with `sudo` primes
+  the sudo cache from the vault first, so a non-interactive session does not wait for a
+  password until the timeout.
+
+## [1.11.1] - 2026-10-17
+
+### Fixed
+
+- The full-width comma `，` separates host aliases, alongside the ASCII one.
+
+## [1.11.0] - 2026-10-17
+
+### Added
+
+- **A connection can be renamed from the settings form.** Credentials, private-key path,
+  note and tags move with it. The host writes the new record before removing the old one, so
+  a failure in between leaves a duplicate rather than a lost configuration.
+
+## [1.10.1] - 2026-10-17
+
+### Changed
+
+- The `/hosts` output is plain text again, and a single dot in the card header carries the
+  outcome. Emoji circles duplicated what that dot already said, and read worse.
+
+## [1.10.0] - 2026-10-17
+
+### Added
+
+- **`/hosts` has its own terminal row**, taken from the `conversation.chat.commandview` slot.
+  The generic command card folded its output into an unstyled `<pre>` and hid it behind a
+  disclosure.
+- The full-width semicolon `；` ends the argument list, alongside the ASCII one.
+
+## [1.9.6] - 2026-10-17
+
+### Changed
+
+- `/hosts` output uses coloured dots rather than check, cross and question marks, which read
+  as verdicts instead of status.
+
+## [1.9.5] - 2026-10-17
+
+### Fixed
+
+- **Arguments are parsed as comma-separated aliases ending at a semicolon.** Splitting on
+  whitespace turned every word after the alias into a host lookup, so a trailing note
+  produced several failed lookups and repeated the same error.
+- Unknown aliases are resolved against the vault first and reported once, instead of being
+  folded in with real connection failures.
+
+## [1.9.4] - 2026-10-17
+
+### Changed
+
+- **The `/ssh` command is now `/hosts`.** The composer is a Lexical editor whose plain text
+  nodes are subject to browser spellcheck; `ssh` is not a dictionary word and got underlined,
+  while `hosts` is.
+
+## [1.9.3] - 2026-10-17
+
+### Fixed
+
+- **The command is registered once and never re-registered.** Re-registering disposes the
+  current definition, and the composer holds it while the user types arguments — swapping it
+  out broke input (backspace stopped working) and needed a UI restart.
+
+## [1.9.2] - 2026-10-17
+
+### Fixed
+
+- **The health dot follows every test.** The card's "Test connection" button updated only the
+  detail area and never the dot, so a successful test left it red; editing a connection did
+  not re-test it either, because the automatic sweep keyed off the alias list, which a change
+  of address does not alter.
+
+## [1.9.1] - 2026-10-17
+
+### Fixed
+
+- **The settings probe times out at 15 seconds, not 8.** A probe really connects over SSH, and
+  a host that is up without a listening `sshd` burns the whole window in TCP connect.
+- A timeout is reported as a timeout, naming the two likely causes (port closed, address
+  changed) instead of surfacing as a bare `(no output)` that looks like a plugin failure.
+
+## [1.9.0] - 2026-10-17
+
+### Added
+
+- The `/ssh` input hint lists the hosts that answered the last health check, and running it
+  with no arguments prints the hosts split into online and offline.
+
+## [1.8.0] - 2026-10-17
+
+### Added
+
+- **Each connection is probed when its card appears**, and the card carries a status dot:
+  grey before the check, yellow while it runs, green on success, red on failure. Checks run
+  serially so a batch of concurrent SSH connections cannot pile onto one unreachable host.
+
+## [1.7.1] - 2026-10-17
+
+### Fixed
+
+- The terminal header shows the exit status. A non-zero remote exit is a normal return for
+  these tools rather than an error, so a failed command looked identical to a successful one.
+
+## [1.7.0] - 2026-10-17
+
+### Added
+
+- **SSH tool calls render as a scrollable terminal in the conversation**, registered on
+  `tool.call.toolview` for `ssh_run`, `ssh_probe` and `ssh_transfer`. None of those key names
+  were occupied, so nothing shipped is shadowed.
+
+## [1.6.9] - 2026-10-17
+
+### Fixed
+
+- Tool output falls back to a `console`-fenced code block. `presentCall` / `presentResult` —
+  the documented terminal-card hooks — turned out to have no consumer anywhere in the
+  installed tree, so they cannot be the sole presentation path.
+
+## [1.6.8] - 2026-10-17
+
+### Added
+
+- `presentCall` / `presentResult` hooks on the three terminal-style tools. See 1.6.9 and
+  1.7.0: these hooks have no consumer in this DSH version, and real presentation arrived
+  through a slot.
+
+## [1.6.7] - 2026-10-17
+
+### Added
+
+- **Uploaded private keys are restricted and pre-checked.** The browser inspects the chosen
+  file before uploading anything and rejects a public key, a PuTTY `.ppk`, a file without a
+  PEM header, or an implausibly large file. The host requires an actual PEM header instead of
+  merely containing the words `PRIVATE KEY`.
+- The key form gained a passphrase field, for a key that is itself encrypted.
+
+## [1.6.6] - 2026-10-17
+
+### Fixed
+
+- The result of "Open in file manager" is reported beside the button. The failure message used
+  to appear only at the top of the page, so pressing the button looked like it did nothing.
+
+## [1.6.5] - 2026-10-17
+
+### Fixed
+
+- The edit form expands under its own card instead of at the top of the page, which used to
+  push the card being edited out of view.
+
+## [1.6.4] - 2026-10-17
+
+### Added
+
+- The vault path sits on its own line with an "Open in file manager" button, backed by an
+  `openVault` route that accepts no path argument at all — it can only open the plugin's own
+  vault directory.
+
+## [1.6.3] - 2026-10-17
+
+### Fixed
+
+- The vault metadata line no longer wraps at its full-width separators.
+- The plugin version is read per request rather than cached, so a client-only change cannot
+  leave the displayed version one release behind.
+
+## [1.6.2] - 2026-10-17
+
+### Fixed
+
+- **The settings route is registered at `/ssh-vault` without a trailing slash.**
+  `kind: 'prefix'` matches the registered path or that path plus a slash, so registering
+  `/ssh-vault/` meant `/ssh-vault/list` matched neither and every request fell through to the
+  fallback handler.
+
+## [1.6.1] - 2026-10-17
+
+### Fixed
+
+- Secondary buttons use the host's own button tokens. The earlier version guessed at token
+  semantics and produced light-on-light buttons in the dark theme.
 
 ## [1.6.0] - 2026-10-17
 
 ### Added
 
-- **Connection management in Settings** (`Settings → SSH Connections`): list, add, edit and delete hosts
-  without going through the conversation at all. A password typed there travels in a same-origin POST body
-  and **never enters the session log** — cleaner than having the model call
-  `ssh_hosts add password=...`.
-- **Two authentication modes**: password and private key. A key can be uploaded whole; the host writes it
-  into the vault directory and tightens its permissions automatically, so you never have to handle file
-  ACLs. Uploading a public key or a non-key file is rejected on the spot.
-- **Test connection**: runs the same real probe as `ssh_probe` and shows the result inline, failure
-  attribution included.
-- **`/ssh` command in the conversation**: `/ssh` lists every host, `/ssh <alias>...` probes one or several,
-  and the outcome lands in the session as a command node.
-- Added `test/vault-api.mjs` (35 cases) covering the settings API's validation, masking and response shape.
-
-### Changed
-
-- The plugin gained a browser half, `client.js`: zero dependencies, zero build, hand-written React elements
-  requiring only the host-provided `react`. `package.json` now declares `dsh.client` and a `./client` export.
-- Added `lib/vault-api.js`: same-origin JSON routes under the `/ssh-vault/` prefix.
-- `npm test` now includes the settings API regression.
+- **Connection management in Settings**: list, add, edit and delete hosts, with password or
+  private-key authentication and a one-click connection test. A password entered there travels
+  in a same-origin POST body and never enters the session log.
+- **The `/ssh` command**: list hosts, or probe one or several by alias.
+- `test/vault-api.mjs`, pinning the settings API's validation, masking and response shape.
 
 ## [1.5.0] - 2026-10-16
 
-Verified against real targets: 25 end-to-end cases pass (Kali with password auth + Windows 10 with key auth).
-
 ### Added
 
-- **`wait_for`** — wait for a remote file to appear, or for its content to match a regex, in a single call;
-  returns the matching line, and exits `124` on timeout. Replaces `sleep` + read-the-log polling and works
-  with `run_in_background`.
-- **`detach`** — run the command under `setsid` on the **remote** host, detached from the SSH session, with
-  output written to a `/tmp` log; returns the pid and log path immediately. A dropped link or a cancelled
-  call does not affect the remote process, which can be inspected at any time afterwards.
+- Encrypted SSH host vault: AES-256-GCM with the data key protected by DPAPI on Windows or
+  derived from a master passphrase via scrypt elsewhere.
+- Model-facing tools `ssh_hosts`, `ssh_run`, `ssh_transfer` and `ssh_probe`, all addressing
+  hosts by alias only.
+- Background job support for commands that outlive one tool call.
+- A private `known_hosts` inside the vault directory with `HashKnownHosts` enabled, so the
+  user's `~/.ssh` is never touched.
+- Offline password entry through `scripts/set-secret.mjs`.
 
-### Changed
+### Security
 
-- **Fallback when a credential reference is unavailable**: if `credentialRef` cannot be resolved but the
-  vault still holds a password, the plugin falls back to it and says so. An environment problem no longer
-  presents itself as "host unavailable" or "authentication failed".
-- **sudo diagnostics and hints**: `a terminal is required` / `需要密码` is recognised and named as "the
-  command did not run", together with a warning about the pipeline exit-code trap. A command containing
-  `sudo -S` without `sudo: true` produces a hint.
-- **Background job exit-code semantics**: a local client exit code of 255 is labelled "SSH transport failed,
-  remote state unknown", and a cancelled call is labelled "whether the remote command is still running
-  cannot be determined from this machine" — no longer conflated with "the command failed".
-
-### Engineering
-
-- Added [`CONTRIBUTING.md`](CONTRIBUTING.md): the red lines (credentials, password paths, zero dependencies,
-  never touching the user's environment), code style, commit convention, PR checklist and architectural
-  constraints.
-- Added [`.editorconfig`](.editorconfig) and a GitHub Actions CI job that runs the host-free regression and
-  fails the build when a private address, private key or API key is committed.
-- `npm test` runs every host-free suite in one command.
-- All examples moved to RFC 5737 documentation addresses (`192.0.2.0/24`, `198.51.100.0/24`,
-  `203.0.113.0/24`).
-- Added GitHub issue and pull request templates: a bug report (with an environment table and a request for
-  diagnostics), a feature request, and a PR checklist covering the red lines and session-log impact. Blank
-  issues are disabled and security reports are routed to private advisories.
-- English documentation completed: `README.md` is now the English main document with the Chinese version at
-  `README.zh-CN.md`; `CONTRIBUTING`, `SECURITY` and `CHANGELOG` each gained an `.en.md` counterpart, and the
-  pairs link to each other at the top.
-
-## [1.4.0] - 2026-10-16
-
-### Added
-
-- **Offline entry channel `scripts/set-secret.mjs`**: a password goes from your own terminal straight into
-  the encrypted vault — not through DSH, not through the model, not into the session log, without touching
-  the disk in plaintext, and without echoing. This resolves the either/or between "encrypted" and "not in the
-  conversation": both now hold at once.
-- The published package now includes `scripts/`.
-
-## [1.3.0] - 2026-10-16
-
-### Changed
-
-- **Switching to `credentialRef` is now cleaner**: setting the reference clears the vault's own copy of the
-  password, so it has a single source.
-- **More accurate diagnostics**: an unavailable credential explains that the provider reads credentials at
-  startup and that a new reference needs a DSH Desktop restart, and offers a temporary recovery path.
-- The documentation now states the cost of `credentialRef`: `%DSH_HOME%\.credentials.yaml` is **plaintext**
-  YAML — it buys "not in the conversation", not "encrypted at rest".
-
-## [1.2.0] - 2026-10-16
-
-### Added
-
-- **`ssh_run sudo=true`**: takes the password from the vault and primes the sudo credential cache through
-  SSH's standard input, so privileged commands no longer need the password in the conversation or on a
-  command line. Verified on a real target that the password does not appear in the remote process list.
-- **`sudoPassword` on host records**: store a sudo password that differs from the login password separately;
-  still ciphertext.
-
-### Changed
-
-- A failed prime now reports a definite conclusion (password mismatch / sudoers requires a tty) and unit
-  cases pin that behaviour.
-
-## [1.1.0] - 2026-10-16
-
-Verified against real targets (Kali with password auth + Windows 10 LTSC with key auth): 17 end-to-end cases
-pass, covering password login, key login, known_hosts hashing, wrong-password attribution, output retention
-on timeout, source-address binding, upload and download, platform-adaptive self-checks, and background job
-streaming and settlement.
-
-### Added
-
-- **Background execution**: `ssh_run run_in_background=true` integrates with the generic job system; output
-  streams live and `job_kill` stops it. No timeout applies.
-- **Source address binding**: host records gained `bindAddress`, and `ssh_run` / `ssh_transfer` / `ssh_probe`
-  can override it per call — `ssh -b` and `scp -o BindAddress=`.
-- **Windows targets**: `shell` accepts `cmd` / `powershell`, and `ssh_probe` switches its probe commands by
-  platform.
-- **Restricted environments**: new `knownHostsFile` / `sshConfigFile` settings, and an explicit warning when
-  DPAPI is unavailable.
-- Three host-free suites: `test/unit.mjs`, `test/background.mjs`, `test/diagnose.mjs`.
-
-### Fixed
-
-- **Failure attribution rewritten**: local key permissions, `.pub` misuse, PPK, a public key that is not
-  installed (including Windows `administrators_authorized_keys`), too many authentication failures,
-  algorithm mismatch, and firewall drops are now separate conclusions. "Wrong account or password" only
-  appears once the rest are excluded.
-- **An interrupted call no longer goes blind**: stdout / stderr received before a timeout or cancellation is
-  preserved and returned.
-- **Validation at entry**: a `privateKeyPath` pointing at a public key, a PPK, or a non-key file fails at save
-  time.
-- **Readability**: octal-escaped paths in ssh errors are decoded back to UTF-8.
-
-## [1.0.0] - 2026-10-13
-
-### Added
-
-- First release: encrypted vault (AES-256-GCM + Windows DPAPI), the four model-facing tools
-  (`ssh_hosts` / `ssh_run` / `ssh_transfer` / `ssh_probe`), and password injection through `SSH_ASKPASS`.
+- A password reaches the local ssh client only through `SSH_ASKPASS`, and a remote `sudo` is
+  primed over stdin; neither appears on a command line or in a process list.
