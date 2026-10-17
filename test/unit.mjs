@@ -6,7 +6,7 @@
  *
  * 运行：node test/unit.mjs
  */
-import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, formatSshHint, parseExitStatus, renderTerminalBlock, runProcess, sudoPrelude } from '../lib/ssh.js'
+import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, parseExitStatus, renderTerminalBlock, runProcess, sudoPrelude } from '../lib/ssh.js'
 
 let passed = 0
 const failures = []
@@ -193,16 +193,6 @@ check('detach 告知存活查询方式', detachScript.includes('ALIVE'), detachS
   check('结尾多余换行被去掉', renderTerminalBlock('out\n\n\n') === '```console\nout\n```', JSON.stringify(renderTerminalBlock('out\n\n\n')))
   check('空输出不留空白行', renderTerminalBlock('') === '```console\n\n```', JSON.stringify(renderTerminalBlock('')))
   check('非字符串输入也能渲染', renderTerminalBlock(42).includes('42'), JSON.stringify(renderTerminalBlock(42)))
-}
-
-// —— `/ssh` 的输入提示：只把在线主机摆出来 ——
-{
-  check('没有体检结果时给通用提示', formatSshHint({}).includes('[别名...]'), formatSshHint({}))
-  check('全部离线时明确说明', formatSshHint({ a: { ok: false } }).includes('没有可达主机'), formatSshHint({ a: { ok: false } }))
-
-  const mixed = formatSshHint({ kali: { ok: true }, win10: { ok: false }, centos: { ok: true } })
-  check('提示里列出在线主机', mixed.includes('在线：kali、centos'), mixed)
-  check('离线主机不出现在提示里', !mixed.includes('win10'), mixed)
 }
 
 console.log(`${passed} 项通过，${failures.length} 项失败`)
