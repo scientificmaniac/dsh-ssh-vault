@@ -2,6 +2,12 @@
 
 **简体中文** | [English](README.md)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
+[![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
+[![Version](https://img.shields.io/badge/version-1.13.0-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-160%20cases-brightgreen.svg)](test)
+
 给 DeepSeek Harness 的智能体提供 SSH 能力：主机地址、端口、账号、口令与私钥都存进加密保险库，对话里只用别名。模型永远看不到口令，口令也不会出现在命令行或远端进程列表里。
 
 ## 简介
@@ -112,21 +118,39 @@ Client 只做呈现与表单，不直接执行任何命令。
 
 ### 数据流
 
-```
-对话 / 设置页
-   │
-   ├─ 模型工具调用 ──► Host：解析别名 → 从保险库取凭据 → 组装 ssh 参数
-   │                                                  │
-   │                                                  ▼
-   │                                         本机 ssh / scp 进程
-   │                                                  │
-   │                                         stdout / stderr
-   │                                                  │
-   └─ Client 渲染 ◄──── 工具结果 ◄───────────────────┘
+```mermaid
+flowchart TB
+    subgraph entry [入口]
+        chat[对话 / 模型工具调用]
+        settings[设置页表单]
+        cmd["/hosts 命令"]
+    end
 
-设置页表单 ──POST /ssh-vault/*──► Host：写保险库
-                                     │
-                             AES-256-GCM 密文落盘
+    subgraph host [Host 半边 index.js]
+        resolve[解析别名 → 取凭据 → 组装 ssh 参数]
+        vault[(保险库<br/>AES-256-GCM 密文)]
+        api["Web 路由 /ssh-vault/*"]
+        exec[spawn 本机 ssh / scp]
+    end
+
+    subgraph client [Client 半边 client.js]
+        toolcard[工具终端卡片]
+        cmdcard["/hosts 双卡片"]
+        form[连接管理表单]
+    end
+
+    proxy[远端主机]
+
+    chat --> resolve
+    cmd --> resolve
+    settings -->|POST JSON| api
+    form -->|同源 document-relative| api
+    api --> vault
+    resolve --> vault
+    resolve --> exec
+    exec -->|stdout / stderr| toolcard
+    exec -->|stdout / stderr| cmdcard
+    exec <--> proxy
 ```
 
 三条约束贯穿整条链路：

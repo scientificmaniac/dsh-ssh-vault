@@ -2,480 +2,394 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-> Encrypted SSH host vault for the DeepSeek Harness: the agent works with host **aliases**, while the
-> address, port, account, and password stay in an AES-256-GCM vault whose key is wrapped by Windows DPAPI.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
+[![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
+[![Version](https://img.shields.io/badge/version-1.13.0-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-160%20cases-brightgreen.svg)](test)
 
-A Host plugin for the DeepSeek Harness that lets an agent drive SSH without ever holding the credentials.
-The model sees `vm-centos`; it never sees `192.0.2.10`, and it cannot read the password back out of the vault.
+SSH for DeepSeek Harness agents: host address, port, account, password and private key live in an encrypted vault, and the conversation only ever uses an alias. The model never sees a password, and a password never reaches a command line or a remote process list.
 
-Typical setup: a Windows machine managing local Linux VMs, out-of-band management interfaces, and
-Windows targets.
+## Overview
 
-- **Zero runtime dependencies** — it drives the system OpenSSH client and nothing else.
-- **A plaintext password never reaches the disk.** It is decrypted in memory, handed to `ssh` through
-  `SSH_ASKPASS`, and dropped when the connection ends.
-- **Failure attribution that names the layer** — local key problem / public key not installed / wrong
-  password / firewall drop are reported as separate conclusions.
-- **Long tasks that do not hold a tool call** — remote detach (`detach`) and condition waiting (`wait_for`),
-  so an ssh call stops being a poller.
+Three capabilities in one plugin:
 
-> **Note on language:** tool descriptions and the configuration surface are English. The diagnostic notes the
-> plugin prints at runtime are currently Chinese; internationalising them is tracked work.
+- **Model-facing tools** — `ssh_hosts`, `ssh_run`, `ssh_transfer`, `ssh_probe`, so the agent operates remote hosts by alias.
+- **Settings UI** — add, edit and delete hosts in Settings → SSH Connections, and test reachability. A password entered there travels in an HTTP body, never through the session log.
+- **`/hosts` command** — probe hosts and run commands from the conversation without going through the model.
 
-## Tools
-
-| Tool | Purpose |
-| --- | --- |
-| `ssh_hosts` | Manage vault entries: `list` / `show` / `add` / `update` / `remove` |
-| `ssh_run` | Run a command; supports `sudo`, `run_in_background`, `detach`, `wait_for`, `bindAddress` |
-| `ssh_transfer` | Upload and download over SCP, with the same `bindAddress` support |
-| `ssh_probe` | Connectivity self-check that adapts its commands to the target's shell |
+Under the hood it drives the local OpenSSH client (`ssh` / `scp`). It does not implement the SSH protocol itself.
 
 ## Install
 
-Package name `dsh-ssh-vault`, bundle row id `ssh-vault`.
+```bash
+dsh plugin --profile desktop install dsh-ssh-vault
+```
+
+From a local directory (development, or before publishing):
+
+```bash
+dsh plugin --profile desktop install "E:\ai project\ssh插件"
+```
+
+**`--profile` is required.** DSH isolates plugins per profile, and one machine can carry several (`desktop`, `cli`, …). Omitting it falls back to whichever profile is currently default, which is an easy way to install into the wrong place. Confirm the landing spot with:
+
+```bash
+dsh plugin --profile desktop list
+```
+
+**Restart DSH after installing.** Host-side tools and routes are loaded at startup.
 
 ### Requirements
 
-- **Windows 10 1809+ / Windows 11** with the **OpenSSH Client** enabled.
-  Check with `ssh -V` — it should print `OpenSSH_for_Windows_9.x`.
-  If missing: Settings → System → Optional features → Add a feature → **OpenSSH Client**.
-- **DSH Desktop** with `dsh.bundle.patch` support (the 0.2.0-rc series is verified).
+| Item | Requirement |
+| --- | --- |
+| Node | ≥ 20 |
+| Machine | OpenSSH client installed (`ssh` on PATH) |
+| Platform | Windows, Linux, macOS |
 
-### Option A — install from a directory (recommended)
+## Quick start
 
-1. Copy the package directory to the target machine, for example `D:\dsh-plugins\dsh-ssh-vault`.
-2. Install it, by asking the agent or through the plugin manager UI:
+1. **Install, then restart DSH.**
+2. Open **Settings → SSH Connections**, click "Add connection", fill in alias, address, port, account, and choose password or private-key authentication.
+   Each card carries a health dot that is checked automatically: grey = not checked, yellow = checking, green = reachable, red = unreachable.
+3. Say something in the conversation, for example:
 
-```
-plugin_manager  action=install_bundle  target="D:\dsh-plugins\dsh-ssh-vault"
-```
+   ```
+   run uptime on kali
+   ```
 
-3. Ask the agent to run `ssh_hosts action=list`; a result means the plugin is live.
+   The model calls `ssh_run` and the result appears as a terminal card.
 
-### Option B — install from an archive
-
-Copy `dsh-ssh-vault-<version>.tgz` (or `.zip`) over, unpack it, then follow Option A.
-The tgz can sometimes be used directly as the install target; if it is rejected, unpack it first.
-
-### Local development
-
-The profile links to this directory, so reinstall after changing files:
-
-```
-plugin_manager  action=install_bundle  target="<path to this checkout>"
-```
-
-> **Restart DSH Desktop after editing the source.** The profile's `patchReload` is `live`, so changing only
-> `config` in `cordis.patch.yml` takes effect immediately. But `index.js` and `lib/*.js` are loaded
-> JavaScript modules: reinstalling the bundle — even removing and installing it again — does **not** replace
-> the module generation in memory.
-
-## Security model
-
-### What is on disk
-
-The vault lives in `%DSH_HOME%\ssh-vault`:
-
-| File | Contents | Plaintext secrets? |
-| --- | --- | --- |
-| `vault.json` | Host inventory ciphertext (AES-256-GCM: `iv` / `tag` / `data`) | No |
-| `key.json` | The 32-byte data key, wrapped by Windows DPAPI for the current user | No |
-| `known_hosts` | Host public keys; host names are hashed via `HashKnownHosts` | No |
-| `askpass.cmd` / `askpass.js` | Password-injection helper; fixed content | No |
-
-Address, port, account, and password all live inside the `vault.json` ciphertext. The data key is wrapped
-again by DPAPI, so **copying the directory to another machine or another Windows user does not let anyone
-decrypt it**.
-
-### Key protection
-
-Chosen by `keyProtection` when the vault is first created and recorded in `key.json`:
-
-- `dpapi` (default) — the data key is protected by DPAPI; the boundary is "the current Windows user".
-- `file` — the data key is stored as base64 in `key.json`; the boundary degrades to filesystem permissions.
-- `passphrase` — the data key is derived from `masterPassword` with scrypt; no key material is stored.
-
-If DPAPI is unavailable (for example a restricted sandbox that forbids child processes), the plugin falls
-back to `file` and says so, rather than failing silently.
-
-### How the password reaches ssh
-
-Windows OpenSSH 9.x supports `SSH_ASKPASS_REQUIRE=force`: with no terminal it asks the program named by
-`SSH_ASKPASS`. The plugin generates `askpass.cmd`, which writes the password to stdout. The password
-therefore exists only in that one `ssh` child process's environment — never on a command line (so it cannot
-be seen in a process list) and never on disk.
-
-### Explicit boundaries
-
-- **Not protected against:** a malicious process already running as the current Windows user. It can read
-  the DPAPI key and the process environment alike. That is the inherent limit of a local threat model.
-- **Session log:** tool arguments are written to the session record. The `password` parameter of
-  `ssh_hosts` therefore enters the log *before* it is encrypted. To avoid that entirely, use the offline
-  entry script or `credentialRef` — and read the trade-offs below, because `credentialRef` is not free.
-- The `host` argument of `ssh_hosts add` likewise enters the session log; recording a host cannot avoid
-  that. Everyday calls afterwards use the alias only.
-
-## Settings UI
-
-**Settings → SSH Connections** manages the vault without going through the conversation at all:
-
-- Lists every saved host with a masked address and account, its authentication type, shell, and whether a
-  password and a sudo password are stored.
-- **Add, edit, and delete** connections. A password typed here travels in a same-origin POST body, so it
-  **never enters the session log** — unlike `ssh_hosts add password=...`.
-- **Password or private key** authentication. Pick the radio, then either type the password or upload the
-  private key file; an uploaded key is written into the vault directory and its permissions tightened
-  automatically, so you never have to fight file ACLs. A `.pub` file or a non-key file is rejected on the
-  spot.
-- **Test connection** runs the same probe as `ssh_probe` and shows the result inline, including the failure
-  attribution.
-
-## `/hosts` in the conversation
-
-```
-/hosts               list every configured host
-/hosts kali          probe one host and show the result
-/hosts kali,win10;    probe several at once (either comma works)
-/hosts kali; apt update  run a command on kali; with several hosts it runs on each
-```
-
-The command runs on the host and its outcome lands in the session as a command node, so the model sees
-which environment you just activated without being told.
+Do not paste passwords into the conversation. A password entered in Settings goes straight into the encrypted vault and never enters the model context.
 
 ## Usage
 
-```
-# Record a host (the password enters the session log here, then is encrypted)
-ssh_hosts  action=add  alias=vm-centos  host=192.0.2.10  port=22
-           username=root  password=...  description="Local CentOS VM"  tags=["vm","centos"]
+### Model-facing tools
 
-# Everyday use — alias only
-ssh_probe  host=vm-centos
-ssh_run    host=vm-centos  command="systemctl status sshd"
-ssh_transfer  host=vm-centos  direction=upload  local=./dist/app.tar  remote=/tmp/app.tar
-```
+| Tool | Purpose | Typical phrasing |
+| --- | --- | --- |
+| `ssh_hosts` | Manage the vault (list / show / add / update / remove) | "which hosts do I have", "change kali's note" |
+| `ssh_run` | Run a command on a host, return stdout and stderr | "check disk usage on kali" |
+| `ssh_transfer` | Upload or download a file (scp) | "copy this file to /tmp on kali" |
+| `ssh_probe` | Reachability self-check returning system facts | "is kali still reachable" |
 
-`ssh_hosts list` masks addresses and accounts by default (`192.0.*.*`, `r***`); pass `reveal=true` to see
-the full values. The password is never returned under any circumstances — `show` only reports
-`set (stored encrypted)`.
+**Where to see the result:** calls to `ssh_run`, `ssh_probe` and `ssh_transfer` render as a **terminal card** — a header with "host · command" and a state dot, above a scrollable monospace output area. The dot is blue while running, grey on success, red on failure (including a non-zero exit code).
 
-### Long tasks: remote detach + condition waiting
+### Settings UI
 
-For anything measured in minutes — upgrades, disk work, scans — use `detach` to run the command **on the
-remote host**, detached from the SSH session:
+Settings → SSH Connections provides:
 
-```
-ssh_run  host=kali  command="apt -y full-upgrade"  sudo=true  detach=true
-→ [dsh-ssh-vault] started in the background on the remote host: pid=6676
-  [dsh-ssh-vault] log: /tmp/.dsh-ssh-<token>.log
-  [dsh-ssh-vault] liveness: ps -p 6676 >/dev/null 2>&1 && echo ALIVE || echo GONE
-```
+- A host list with a health dot per card; hover for detail
+- Add / edit / delete connections (the alias is editable, credentials move with it)
+- A "Test connection" button per card, whose result also drives the dot
+- "Open in file manager" for the vault directory
+- Password and private-key authentication; a key can be uploaded whole and is written into the vault with its permissions tightened
 
-The local call returns in about a second, and the remote process is independent of it: a dropped link, a
-cancelled call, or a proxy timeout all leave it running. This is more reliable than a long-lived local
-connection — the pid and the log stay on the remote host, ready to inspect later.
+### The `/hosts` command
 
-Then **do not poll with `sleep`**; wait once with `wait_for`:
+Start a line with `/` in the composer and the command runs **without going through the model**.
 
 ```
-ssh_run  host=kali  wait_for={path: "/tmp/dsh-upgrade.log", regex: "Upgrade complete", timeoutMs: 900000}
+/hosts                    list every host, grouped into online / offline
+/hosts kali               probe one
+/hosts kali,win10         probe several (either comma form works)
+/hosts kali; apt update   run a command on kali
+/hosts kali,win10; uptime run on every reachable host
 ```
 
-On success it returns the matching line; on timeout it exits `124` and says so. The wait can itself go to
-the background:
+- Separators accept both ASCII and full-width forms: `,` and `，`, `;` and `；`
+- If the text after the semicolon reads as natural language (e.g. "check the disk"), the command **does not run it** and tells you to send that sentence to the conversation instead — command output never reaches the model, so such requests cannot go through the command
+- Output renders as **two cards**: reachability and command execution, each with its own state dot
 
-```
-ssh_run  host=kali  wait_for={path: "/var/log/upgrade.log", regex: "complete"}  run_in_background=true
-```
+## Architecture
 
-Having the command write its own completion marker makes the condition most reliable:
-`command="...; echo DONE > /tmp/job.done"` followed by `wait_for={path: "/tmp/job.done"}`. A full
-"start + wait" flow is then two calls instead of a dozen sleeps.
+### Two halves
 
-### Privileged work: sudo without the conversation
+This is a **Host + Client** plugin; the two halves load through different mechanisms:
 
-Do not write `echo <password> | sudo -S` — that puts the password into the tool arguments, the session log,
-and the remote `ps`. Use `sudo: true` instead:
+| Half | Entry | Loading |
+| --- | --- | --- |
+| **Host** | `index.js` | Cordis plugin, inserted into the Loader through `cordis.patch.yml` |
+| **Client** | `client.js` | Browser module, declared via `dsh.client` in `package.json` and injected into the page by the host |
 
-```
-ssh_run  host=kali  command="apt update && apt -y full-upgrade"  sudo=true
-```
+The Host half carries every sensitive operation: vault encryption, driving the local `ssh` client, web routes, and the registration of commands and tools.
+The Client half only renders and collects form input; it never executes a command.
 
-The plugin takes the password from the vault and primes the sudo credential cache **through SSH's standard
-input**. The password therefore does not appear in:
+### Data flow
 
-- tool arguments or the session log (the call only says `sudo: true`);
-- the local command line or the `ssh` process arguments;
-- the remote command line or the remote `ps` output (it travels on stdin and is never written down).
+```mermaid
+flowchart TB
+    subgraph entry [Entry points]
+        chat[Conversation / model tool call]
+        settings[Settings form]
+        cmd["/hosts command"]
+    end
 
-When the host has no separate password, the login password is reused. When the sudo password differs, store
-it with `ssh_hosts action=update sudoPassword=...`. A failed prime reports "the stored password may not be
-this account's sudo password, or sudoers requires a tty" rather than leaving you guessing.
+    subgraph host [Host half — index.js]
+        resolve[Resolve alias → read credentials → build ssh args]
+        vault[(Vault<br/>AES-256-GCM ciphertext)]
+        api["Web routes /ssh-vault/*"]
+        exec[Spawn local ssh / scp]
+    end
 
-> If a command writes `sudo -S` while `sudo: true` is not set, the result carries a hint.
-> When sudo fails to obtain a password (`a terminal is required`), the diagnosis names it — and warns about
-> the **pipeline trap**: the exit code of `sudo ... | grep ...` comes from the last stage, so a failed sudo
-> can still return 0 and look like "empty output".
+    subgraph client [Client half — client.js]
+        toolcard[Tool terminal card]
+        cmdcard["/hosts double card"]
+        form[Connection form]
+    end
 
-### Passwords that never pass through the model: offline entry (recommended)
+    proxy[Remote host]
 
-`ssh_hosts add password=...` writes the password into the session log. `credentialRef` avoids the
-conversation but puts the password into a **plaintext** YAML file. **You do not have to choose.** Enter it
-from your own terminal, straight into the encrypted vault:
-
-```powershell
-cd <package directory>
-node scripts/set-secret.mjs kali          # interactive, no echo
-node scripts/set-secret.mjs kali --sudo   # set a separate sudo password
-node scripts/set-secret.mjs kali --show   # inspect state only
-```
-
-Where the plaintext exists along this path:
-
-| Stage | Where the plaintext is |
-| --- | --- |
-| Entry | Only in your terminal (no echo); never through DSH, the model, or the session log |
-| At rest | `vault.json` ciphertext (AES-256-GCM); the data key is wrapped by DPAPI |
-| In use | Decrypted in **memory**, handed to `ssh` via askpass, discarded afterwards |
-
-So there is **no need** to "write it to disk and encrypt it back later": the plugin already decrypts only
-when needed. Introducing a temporary plaintext file would add an exposure window, not remove one.
-
-Set `$env:DSH_HOME` before running the script if the harness uses a custom data directory, otherwise it
-will look in `~/.dsh`.
-
-### Passwords that never pass through the conversation: credentialRef
-
-Keep only the **credential name** in the host record and let the Harness credential store supply the value:
-
-```
-# 1) Add a line under refs in %DSH_HOME%\.credentials.yaml (or use the Harness credentials UI).
-#    Quote the value: a bare number is parsed as an integer by YAML, and : # @ need quoting anyway.
-refs:
-  KALI_SSH_PASSWORD: "<password>"
-
-# 2) Keep only the reference in the host record; setting it clears the vault's own copy
-ssh_hosts  action=update  alias=kali  credentialRef=KALI_SSH_PASSWORD
+    chat --> resolve
+    cmd --> resolve
+    settings -->|POST JSON| api
+    form -->|same-origin, document-relative| api
+    api --> vault
+    resolve --> vault
+    resolve --> exec
+    exec -->|stdout / stderr| toolcard
+    exec -->|stdout / stderr| cmdcard
+    exec <--> proxy
 ```
 
-The model and the conversation never see the password; `ssh_hosts show` reports only `credentialRef: ...`
-and `password: missing`.
+Three invariants hold across that chain:
 
-> **Two limits worth knowing**
->
-> 1. **That file is plaintext YAML.** `%DSH_HOME%\.credentials.yaml` sits next to `DEEPSEEK_API_KEY`
->    unencrypted. So `credentialRef` buys "no password in the conversation", **not** "encrypted at rest" —
->    the two are mutually exclusive here: the vault's own `password` is ciphertext but passes through the
->    conversation on entry; `credentialRef` avoids the conversation but lands in plaintext. The offline
->    entry script satisfies both.
-> 2. **The provider reads credentials at startup.** After adding or editing `refs` you must **restart DSH
->    Desktop**; until then the host reports the reference as unavailable.
->
-> **A stale reference does not brick the host.** If `credentialRef` is unavailable but the vault still holds
-> a password, the plugin **falls back** to it and says so in the result: "…is currently unavailable; this
-> call fell back to the password stored in the vault." An environment problem therefore no longer looks
-> like an authentication failure, and a running background task is not interrupted. It only errors when
-> there is no password to fall back to either.
-
-### Out-of-band management: binding the source address
-
-When a rule change would cut the management path, preset a source address on the host, or override it per
-call:
-
-```
-ssh_hosts  action=update  alias=kali  bindAddress=192.0.2.150
-ssh_run    host=kali  command="ip addr add 192.0.2.150/24 dev eth0"  bindAddress=192.0.2.150
-```
-
-`ssh` uses `-b`; `scp` uses `-o BindAddress=`.
-
-## Windows targets and restricted environments
-
-### Set the shell to cmd or powershell
-
-Windows' login shell is `cmd.exe`, where POSIX commands and multi-line scripts do not work:
-
-```
-ssh_hosts  action=update  alias=win-box  shell=powershell
-```
-
-The plugin then feeds the command through `powershell -NoProfile -NonInteractive -Command -` on standard
-input, and `ssh_probe` switches to `whoami` / version / boot time instead of failing on `uname`.
-
-> **Observed:** `cmd` echoes its version banner and prompt (`Microsoft Windows [Version ...]`,
-> `C:\Users\...>`) when reading commands from a pipe. It works, but the output is noisy. **Use `powershell`
-> when you want clean output** — its self-check reads like `identity: user@WIN10` /
-> `os: Microsoft Windows 10 Enterprise LTSC`.
-
-For real work, upload a `.ps1` and run it with `powershell -File`, treating `ssh_run` as the transport. Two
-known encoding traps:
-
-- A `.ps1` containing non-ASCII text must be **UTF-8 with BOM**, or PowerShell 5.1 parses it as ANSI and
-  reports `Unexpected token`.
-- If console output is garbled, set `[Console]::OutputEncoding = [Text.Encoding]::UTF8` and `chcp 65001` at
-  the top of the script.
-
-### Private keys: a public key cannot log in, and permissions must be tight
-
-- `privateKeyPath` is validated **at save time**: a `.pub` file, a PuTTY `.ppk`, or a file that is not a key
-  at all is rejected immediately, instead of surfacing later as an authentication failure.
-- `UNPROTECTED PRIVATE KEY FILE` / `Permissions for ... are too open` means the ssh client **refused to load
-  the key itself** — it has nothing to do with the account or password on the server. The plugin reports it
-  as the first conclusion rather than blaming the password.
-- Where a restricted sandbox forbids changing ACLs, copy the key into the vault directory
-  (`%DSH_HOME%\ssh-vault`) and point the host record at the copy.
-
-### Where Windows administrators' authorized_keys live
-
-Windows OpenSSH applies `Match Group administrators`:
-
-```
-__PROGRAMDATA__/ssh/administrators_authorized_keys
-```
-
-For an administrator account the public key must go in that file (which must be readable only by
-Administrators and SYSTEM). Putting it in the user profile's `.ssh\authorized_keys` has no effect. The
-plugin states this explicitly when it receives `Permission denied (publickey...)`.
-
-### Readable error paths
-
-ssh escapes non-ASCII paths into forms like `E:\\ai project\\\346\223\215\344\275\234\\id_rsa`. The plugin
-decodes those octal escapes back to UTF-8, so the message is readable.
-
-### known_hosts and user configuration
-
-The plugin always uses `known_hosts` inside the vault directory (with `HashKnownHosts` on) and **never
-writes `~/.ssh`**, so the sandbox error `Could not create directory 'C:\Users\...\.ssh'` cannot come from
-it. Use `knownHostsFile` to relocate it, or `sshConfigFile` to point at — or (`none`) to suppress — the
-user-level ssh configuration.
-
-### Pipelines that hide output
-
-Output from `ssh ... | grep -v ...` stays in the remote pipeline buffer; while the command hangs, nothing
-comes back. Workarounds:
-
-- use `detach` for long commands;
-- add `stdbuf -oL` on the remote side when you need filtered output live
-  (`stdbuf -oL journalctl -f | grep -v cron`);
-- split into smaller commands, one call each, or write results to a remote file and read it back.
+1. **A password never reaches a command line** — local ssh receives it through `SSH_ASKPASS`; remote sudo is primed over stdin
+2. **Only ciphertext touches disk** — AES-256-GCM, with the data key protected by DPAPI (Windows) or derived from a master passphrase via scrypt
+3. **`~/.ssh` is never touched** — `known_hosts` points into the vault directory and `HashKnownHosts` is enabled
 
 ## Configuration
 
-Override the `ssh-vault` row's `config` in the profile's `cordis.patch.yml` (`config` is replaced wholesale,
-not deep-merged):
+The plugin has **no user-configurable options**. `config: {}` in `cordis.patch.yml` is an empty object, and the Loader entry `id` is fixed as `ssh-vault`.
 
-```yaml
-- id: ssh-vault
-  config:
-    keyProtection: dpapi        # dpapi | file | passphrase
-    masterPassword: ''          # only for passphrase mode
-    vaultDir: ''                # defaults to %DSH_HOME%\ssh-vault
-    knownHostsFile: ''          # defaults to <vaultDir>\known_hosts
-    sshConfigFile: ''           # passed to ssh -F
-    sshExecutable: ssh
-    scpExecutable: scp
-    connectTimeoutSec: 10
-    defaultTimeoutMs: 120000
-    maxOutputBytes: 200000
-    maskHostAddress: true       # false makes list/show reveal addresses by default
-```
+Behaviour is shaped by the following:
 
-## Troubleshooting
+| Item | Notes |
+| --- | --- |
+| Vault directory | Defaults to `$DSH_HOME/ssh-vault`; `DSH_HOME` is decided by DSH |
+| Key protection | Windows defaults to `dpapi`; other platforms require a master passphrase (`passphrase` mode) |
+| Timeouts | `ssh_run` defaults to 120s, adjustable, capped at 30 minutes; commands inside `/hosts` are fixed at 120s |
+| Health checks | Settings page and `/hosts` probe with a 15s timeout; the background sweep refreshes every 5 minutes |
 
-The plugin attributes failures in order — **local key → server authentication → transport** — and only says
-"wrong account or password" once the earlier causes are excluded.
+## API and extension points
 
-- **Local key permissions / `.pub` used as a key / PPK**: see "Private keys" above.
-- **`Permission denied (publickey)`**: the public key is not installed on the target; see the Windows
-  administrator note above.
-- **`Permission denied, please try again.`**: wrong password — fix it with `ssh_hosts action=update`.
-- **`Too many authentication failures`**: the client tried too many keys; use an explicit password or
-  `privateKeyPath`.
-- **Network unreachable / connection refused**: check the subnet and firewall. If `bindAddress` is set,
-  confirm the source address is still on an interface — an address added manually with `ip addr add` is lost
-  on DHCP renewal.
-- **Connection closed during handshake**: usually a firewall or security group dropping packets, not
-  authentication.
-- **Host key changed** (target rebuilt): delete its entry from the vault's `known_hosts` and reconnect.
-- **Remote shell missing**: set `shell: /bin/sh` for Linux, or `cmd` / `powershell` for Windows.
-- **`key.json` cannot be decrypted**: the key is bound to the Windows user that created it. If the inventory
-  can be rebuilt, delete `key.json` and `vault.json` and re-enter the hosts.
+Host-side services are reached through `ctx.inject` as optional dependencies; a missing service does not fail the plugin, it just disables that capability.
 
-## Tests
+### Model tools (`ctx.tools.register`)
 
-Four regression scripts live in `test/`; only two need a real target, and none of them contains a credential.
+| Tool | Key parameters |
+| --- | --- |
+| `ssh_hosts` | `action` required (list / show / add / update / remove); `reveal` controls whether address and account are masked |
+| `ssh_run` | `host`, `command` required; optional `sudo`, `timeoutMs`, `workdir`, `run_in_background`, `wait_for`, `bindAddress` |
+| `ssh_transfer` | `host`, `direction`, `local`, `remote` required; optional `recursive` |
+| `ssh_probe` | `host` required; optional `timeoutMs`, `bindAddress` |
 
-```powershell
-npm test                   # the three host-free suites (this is what CI runs)
+The three terminal-style tools also register `presentCall` / `presentResult` hooks, but **the current DSH version has no consumer for them**; presentation is handled by the slots below.
 
-node test/diagnose.mjs     # shell translation, octal decoding, failure attribution
-node test/unit.mjs         # ssh/scp argument construction, timeout/cancel output retention, wait/detach scripts
-node test/background.mjs   # background job registration contract
+### Client slots (`ctx.slots.register`)
 
-# needs a real target
-$env:LIVE_KALI_HOST = '<host>'
-$env:LIVE_KALI_USER = '<user>'
-$env:LIVE_KALI_PASS = '<password>'
-$env:LIVE_WIN_HOST  = '<host>'
-$env:LIVE_WIN_USER  = '<user>'
-$env:LIVE_WIN_KEY   = '<private key path>'
-node test/live.mjs
-node test/selftest.mjs
-```
+| Slot | Key | Effect |
+| --- | --- | --- |
+| `settings.section` | `id: ssh-vault`, `order: 20`, `label` | The "SSH Connections" page in the settings panel |
+| `tool.call.toolview` | `ssh_run`, `ssh_probe`, `ssh_transfer` | Renders those tool calls as terminal cards |
+| `conversation.chat.commandview` | `hosts` | Renders `/hosts` output as two terminal cards |
 
-The three host-free suites skip the cases that need to spawn a child process under a restricted sandbox
-(`EPERM`) and report the skip; everything else still runs. Each script uses its own temporary directory and
-never touches a real vault.
+The `tool.call.toolview` key space is open; none of these three names were taken, so no built-in UI is shadowed.
 
-Current state: **89 host-free unit cases** plus **25 live end-to-end cases** against a Kali and a Windows 10
-target.
+### Human command (`ctx.commands.register`)
 
-## Package layout
+| Command | Notes |
+| --- | --- |
+| `/hosts` | Probe hosts / run a command on them. Form: `alias[,alias][; shell command]` |
 
-```
-package.json            bundle manifest (dsh.bundle.patch points at cordis.patch.yml)
-cordis.patch.yml        Loader row definition (id: ssh-vault)
-index.js                plugin entry and the four model-facing tools
-client.js               browser half: the Settings → SSH Connections page and the /hosts command surface
-lib/vault-api.js        same-origin JSON routes behind the settings page
-lib/vault.js            AES-256-GCM vault + DPAPI / scrypt key protection
-lib/ssh.js              OpenSSH driver: argument construction, askpass, attribution, wait/detach scripts
-lib/background.js       ctx.jobs background task adapter
-scripts/set-secret.mjs  offline password entry (neither DSH nor the model is involved)
-locale/{zh,en}.json     plugin manager title and description
-icon.svg                plugin card icon
-README.md               this file (English)
-README.zh-CN.md         中文说明
-CHANGELOG.md            version history
-CONTRIBUTING.md         red lines, code style, testing requirements
-SECURITY.md             security boundaries and vulnerability reporting
-LICENSE                 MIT
-test/                   regression; the first three need no host, the rest need a real target (not shipped)
-dist/                   build artifacts, tgz / zip (not shipped)
-```
+The command is **registered once and never re-registered**. The disposer returned by `commands.register` destroys the current definition; re-registering while the user is typing arguments strips the composer of its command context (backspace stops working, and the UI needs a restart).
 
-The published file list is the `files` allowlist in `package.json`. Repack after changing files:
+### HTTP routes (`ctx.webServer.register`)
 
-```powershell
-$env:npm_config_cache = "$PWD\.npm-cache"
-npm pack --pack-destination dist
-Remove-Item .npm-cache -Recurse -Force
-```
+Mounted at `/ssh-vault` (`kind: 'prefix'`, **no trailing slash**). `POST` only, JSON in and out, with an envelope of `{ ok: true, value }` or `{ ok: false, error }`.
+
+| Path | Effect |
+| --- | --- |
+| `/ssh-vault/list` | Host list (address and account masked, no passwords) |
+| `/ssh-vault/save` | Create / update / rename |
+| `/ssh-vault/remove` | Delete |
+| `/ssh-vault/test` | Reachability probe |
+| `/ssh-vault/reveal` | Return unmasked address and account |
+| `/ssh-vault/openVault` | Open the vault directory in the system file manager |
+
+`openVault` **accepts no path argument at all** — it can only open the plugin's own vault directory.
+
+### About `ctx.systemPrompt.section`
+
+**This plugin does not use that extension point.** Every tool carries its own `description`, and no section is injected into the system prompt, so prompt length and ordering are unaffected.
+
+## Lifecycle
+
+### Startup
+
+1. The Loader reads `cordis.patch.yml` and inserts the entry with `id: ssh-vault`
+2. The host `import`s `index.js` and calls `apply(ctx, config)`
+3. `apply` opens the vault, registers the four tools, and — where the services exist — the web routes, the `/hosts` command and the background health timer
+4. The Client half is injected into the page per the `dsh.client` declaration, and its `apply` registers the three slots
+
+### Unload and resource reclamation
+
+Async resources are wrapped in `ctx.effect`, and Cordis runs the returned cleanups in reverse order on teardown:
+
+- Tool and command disposers
+- Web route disposers
+- The health sweep's `setTimeout` / `setInterval`
+- The vault handle
+
+Vault data **survives uninstall** and is available again after reinstall.
+
+### Hot update
+
+The two halves behave differently, and this is easy to get wrong:
+
+| Change | Takes effect by |
+| --- | --- |
+| `client.js` and slot rendering | Reinstall the bundle, then **reload the page** |
+| `index.js` / `lib/**` | **Restart DSH**; reinstalling does not replace an already-loaded module generation |
+| `package.json` `version` | The version shown in Settings is read from this file by the Host |
+
+**Do not infer that the browser has new code from an unchanged slot id** — slot registration reflects the host side, not the module actually running in the page.
+
+## Known limitations
+
+### Platform and authentication
+
+- **`dpapi` key protection is Windows-only.** On Linux and macOS the `passphrase` mode is required (a master passphrase, with the key derived through scrypt)
+- **The Settings UI supports only password and private-key authentication.** The `agent` auth type can be set through `ssh_hosts add`, but the form cannot enter or edit it
+- **Remote shells supported: bash / sh / cmd / powershell.** Sudo priming applies to POSIX shells only
+
+### Concurrency
+
+- **The vault has no cross-process lock.** Two DSH instances (different profiles pointing at the same vault directory) writing at the same time means the later write wins
+- Within one profile, writes from several sessions serialize on the event loop, but frequent concurrent edits of the same host are still not advisable
+
+### Host keys
+
+`StrictHostKeyChecking=accept-new` is used: **the first connection is trusted automatically**, and any later fingerprint change is refused. There is no separate fingerprint-verification flow, so judging whether a first-time target is trustworthy is up to the operator.
+
+### Output and timeouts
+
+- `ssh_run` caps a single result at 200000 characters and truncates beyond that
+- Each command inside `/hosts` echoes at most 40 lines
+- Commands inside `/hosts` have a fixed 120s timeout that is not configurable
+- Foreground tool calls have **no streaming output**: the result appears in one piece when the command ends. To watch a long job, use `run_in_background`, whose output lands in a job card
+
+### Interface
+
+- The **navigation icon next to "SSH Connections" is drawn by the host from the section id**. The `settings.section` registration accepts only `id` / `order` / `label`, so a plugin cannot supply its own icon
+- Command arguments have **no candidate-list mechanism** (`CommandInputDescriptor` carries only `hint` and `attachments`), so `/hosts` cannot offer alias completion
+
+### Open questions
+
+Not verified in detail; check the source or upstream docs before relying on them:
+
+- Whether DSH exposes a structured field for command results, which would replace the textual section markers (`─── 连接状态:ok ───`) used today
+- Whether the host will connect a consumer to `presentCall` / `presentResult` in a future version
+
+## Security boundary
+
+### What it touches
+
+| Category | Accessed | Detail |
+| --- | --- | --- |
+| Filesystem | **Yes** | The vault directory (`vault.json`, `key.json`, `known_hosts`, uploaded key copies) and any private-key path you supply; **never** `~/.ssh` |
+| Network | **Yes** | Outbound SSH through the local `ssh` / `scp` processes; loopback HTTP routes (same origin, behind the host trust layer) |
+| Terminal | **Yes** | Spawns the local OpenSSH client; `openVault` launches the system file manager |
+| External APIs | **No** | No third-party service is contacted |
+| User data | **Yes** | Host address, port, account, password, private key, note, tags |
+
+### Password handling
+
+- **Local SSH**: passed through `SSH_ASKPASS`, never on the command line or in a process list
+- **Remote sudo**: primed over stdin, never on the remote command line or in `ps`
+- **On disk**: only AES-256-GCM ciphertext; the data key is protected by DPAPI or a scrypt-derived key
+- **Model context**: a password never appears in tool arguments or results; one entered in Settings travels in an HTTP body and stays out of the session log
+- **`credentialRef`**: when a host points at an entry in the Harness credential store, the password is read at connect time and never passes through this plugin
+
+### Trust boundary
+
+The web routes ride on the DSH web server, and unauthenticated requests are refused by its trust layer (401/403). The plugin adds no authentication of its own, so **do not expose the DSH web port to an untrusted network**.
+
+### Reporting a vulnerability
+
+See [SECURITY.md](SECURITY.en.md).
+
+## FAQ
+
+**"SSH Connections" is missing from Settings after installing.**
+Check you installed into the right profile: `dsh plugin --profile <name> list`. Then restart DSH — the client bundle is injected at page bootstrap, so a page reload alone is not enough.
+
+**A tool call reports a missing route, or Settings says the host is still running old code.**
+The host code was updated but the process was not restarted. Restart DSH.
+
+**The health dot stays red although the host answers ping.**
+The dot tests the **SSH port 22**, not ICMP. Check that `sshd` is running, that a firewall allows the port, and that the address stored in the vault is still current.
+
+**A connection test reports "connection not established within 15000ms".**
+Again a network-layer signal: the address changed, a firewall is blocking, or the machine is up without `sshd`. It is unrelated to login credentials.
+
+**A word gets a red squiggle while typing `/hosts`.**
+That is why the command is named `hosts`: the composer is a Lexical editor whose plain text nodes are subject to browser spellcheck, and `hosts` is a dictionary word while `ssh` is not.
+
+**`/hosts kali,win10` says "not found".**
+Check the alias spelling against the vault; it is case-sensitive. Run `/hosts` with no arguments to list the valid aliases.
+
+**A private key upload is rejected.**
+Three common causes: a `.pub` public key was chosen, a PuTTY `.ppk` was chosen (convert it with `puttygen` first), or the file has no `BEGIN … PRIVATE KEY` header.
+
+**Output from several hosts runs together.**
+Use the `/hosts host; command` form; the output splits into a reachability card and a command card.
+
+**Client code changed but the interface did not.**
+Reload the page. Host-side changes need a DSH restart.
 
 ## Contributing
 
-Issues and pull requests are welcome. **Read [CONTRIBUTING.md](CONTRIBUTING.md) first** — this plugin stores
-other people's passwords and runs commands on their machines, so that document defines the red lines and the
-testing requirements.
+See [CONTRIBUTING.en.md](CONTRIBUTING.en.md). The hard rules: **zero runtime dependencies** (Node built-ins only on the Host side; only the host-provided `react` on the Client side), no real credentials or addresses in the repo, and a password must never reach a command line or the session log.
 
-```powershell
-npm test
+```bash
+npm test            # host-free regression suite
+npm run test:live   # end-to-end cases against real hosts
 ```
-
-Version history is in [CHANGELOG.md](CHANGELOG.md); security boundaries and reporting are in
-[SECURITY.md](SECURITY.md).
 
 ## License
 
 [MIT](LICENSE)
+
+## Cheat sheet: start · use · stop · uninstall
+
+```bash
+# Install (profile required)
+dsh plugin --profile desktop install dsh-ssh-vault
+dsh plugin --profile desktop install "E:\ai project\ssh插件"
+
+# Confirm where it landed
+dsh plugin --profile desktop list
+
+# Reinstall to refresh the installed copy
+dsh plugin --profile desktop remove dsh-ssh-vault
+dsh plugin --profile desktop install dsh-ssh-vault
+
+# Uninstall
+dsh plugin --profile desktop remove dsh-ssh-vault
+```
+
+**Starting and stopping** are handled by the DSH process itself: the plugin loads when DSH starts and unloads when DSH exits. It has no separate process and no resident background service.
+
+Uninstalling **does not delete the vault**. Data stays in `$DSH_HOME/ssh-vault` and is usable again after reinstall; delete that directory by hand to remove it entirely.
+
+Everyday reference:
+
+```
+Settings → SSH Connections        manage hosts, test reachability, open the vault directory
+/hosts                            list hosts and their online state
+/hosts kali                       probe one host
+/hosts kali,win10; uptime         run a command on several
+(just talk)                       let the model pick hosts and call the tools
+```

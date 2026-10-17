@@ -4,16 +4,16 @@
     给 Kali 虚拟机做 VMware DHCP 地址保留（固定租约）。
 
 .DESCRIPTION
-    把 kali 的 MAC 地址钉死到 192.168.234.150，这样 VMware 的 DHCP 每次都会把同一个地址
+    把 kali 的 MAC 地址钉死到 192.0.2.150，这样 VMware 的 DHCP 每次都会把同一个地址
     发给它，不会因为 DHCP 池重新分配而漂移。
 
     脚本可重复运行：已经存在同名 host 块时会更新而不是重复追加。
 
 .PARAMETER Mac
-    Kali eth0 的 MAC 地址。默认 00:0c:29:86:65:45（本机实测值）。
+    Kali eth0 的 MAC 地址。默认 00:0c:29:00:00:01（示例值，请按实际填写）。
 
 .PARAMETER Address
-    要保留的地址。默认 192.168.234.150。
+    要保留的地址。默认 192.0.2.150。
 
 .PARAMETER HostName
     配置文件里的条目名，仅作标识，不影响行为。
@@ -23,8 +23,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Mac = '00:0c:29:86:65:45',
-    [string]$Address = '192.168.234.150',
+    [string]$Mac = '00:0c:29:00:00:01',
+    [string]$Address = '192.0.2.150',
     [string]$HostName = 'kali'
 )
 
