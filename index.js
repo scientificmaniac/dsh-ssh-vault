@@ -904,10 +904,10 @@ export function apply(ctx, config = {}) {
       handler: async (invocation) => {
         // 参数只认「逗号分隔 + 分号结尾」。分号之后的都是用户自己的话，直接丢弃——
         // 这样 `/hosts kali,win10; 试一下 apt update` 不会把后面的词当成主机名。
-        // 中英文分号都认：中文输入法下打出来的是全角「；」。
+        // 中英文标点都认：中文输入法下打出来的是全角「，」和「；」。
         const head = invocation.rawInput.split(/[;；]/)[0]
-        const names = head.split(',').map((part) => part.trim()).filter((part) => part.length > 0)
-        const usage = '用法：`/hosts 别名,别名;备注` —— 逗号分隔多台，分号之后的内容会被忽略。'
+        const names = head.split(/[,，]/).map((part) => part.trim()).filter((part) => part.length > 0)
+        const usage = '用法：`/hosts 别名,别名;备注` —— 逗号分隔多台（中英文逗号都行），分号之后的内容会被忽略。'
         try {
           if (names.length === 0) {
             const hosts = await vault.list()
