@@ -318,7 +318,7 @@ Web 路由由 DSH 的 Web 服务器承载，未认证请求会被信任层拒绝
 
 ### 报告安全问题
 
-见 [SECURITY.md](SECURITY.md)。
+见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
 
 ## 常见问题
 
@@ -351,7 +351,7 @@ Host 侧代码已更新但进程没重启。重启 DSH。
 
 ## 贡献
 
-见 [CONTRIBUTING.md](CONTRIBUTING.md)。核心红线：**零运行时依赖**（Host 侧只用 Node 内置模块，Client 侧只 require 宿主提供的 `react`）、不提交真实凭据与真实地址、口令不得进入命令行或会话日志。
+见 [CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)。核心红线：**零运行时依赖**（Host 侧只用 Node 内置模块，Client 侧只 require 宿主提供的 `react`）、不提交真实凭据与真实地址、口令不得进入命令行或会话日志。
 
 ```bash
 npm test            # 免主机的回归

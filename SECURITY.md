@@ -1,36 +1,39 @@
-# 安全策略
+# Security Policy
 
-[English](SECURITY.en.md) | **简体中文**
+**English** | [简体中文](SECURITY.zh-CN.md)
 
-## 报告漏洞
+## Reporting a vulnerability
 
-请**不要**开公开 issue。通过 GitHub 仓库的 **Security → Report a vulnerability** 私下提交，
-并附上复现步骤与影响范围。确认后会尽快修复，并在 CHANGELOG 中致谢。
+Please do **not** open a public issue. Use **Security → Report a vulnerability** on the GitHub repository and
+include reproduction steps and impact. Confirmed reports are fixed as quickly as possible and credited in the
+CHANGELOG.
 
-## 这个插件保护什么
+## What this plugin protects
 
-一句话：它保护**磁盘上的凭据**，不是一台已经被攻陷的机器。
+In one sentence: it protects **credentials at rest**, not a machine that has already been compromised.
 
-| 有保护 | 无保护 |
+| Protected | Not protected |
 | --- | --- |
-| 地址、端口、账号、口令以 AES-256-GCM 密文落盘 | 已经以当前 Windows 用户身份运行的恶意进程 |
-| 数据密钥由 Windows DPAPI 绑定到当前用户，换机器/换用户都解不开 | 你在对话里明文说过的口令（它会进入会话日志） |
-| 口令经 askpass 环境变量交给 `ssh`，不进两端命令行、不进远端 `ps` | 远端主机自身的日志、审计与进程环境 |
-| `known_hosts` 主机名哈希化，地址不以明文落盘 | 目标主机被完全控制之后的一切 |
-| 私钥文件在录入时校验（拒绝 `.pub`、PPK、非密钥文件） | 私钥文件本身的权限——那由操作系统负责 |
+| Address, port, account, and password are stored as AES-256-GCM ciphertext | A malicious process already running as the current Windows user |
+| The data key is bound to the current user by Windows DPAPI; another machine or user cannot decrypt it | A password you typed into the conversation — that enters the session log |
+| The password reaches `ssh` through an askpass environment variable, never a command line or the remote `ps` | The remote host's own logs, auditing, and process environment |
+| Host names in `known_hosts` are hashed, so addresses are not written in the clear | Anything that happens after the target is fully controlled |
+| Private keys are validated on entry (`.pub`, PPK and non-key files are rejected) | The permissions on the key file itself — that is the operating system's job |
 
-## 已知取舍
+## Known trade-offs
 
-- **`credentialRef` 指向的文件是明文。** `%DSH_HOME%\.credentials.yaml` 未经加密，
-  它换来的是「口令不进对话」，不是「口令加密落盘」。
-  想要两者兼得，请用离线录入通道 `scripts/set-secret.mjs`。
-- **远端会留下产物。** `detach` 与后台任务在远端 `/tmp` 写日志文件（`.dsh-ssh-*.log`）；
-  其中可能包含命令输出。请自行评估目标机的可访问性，并在任务结束后清理。
-- **`known_hosts` 使用 `accept-new`。** 首次连接自动信任并记录主机密钥，此后变更会被拒绝；
-  这防的是后续中间人，不是首次连接时的中间人。需要严格模式请自行改用 `sshConfigFile`。
-- **超时中断不等于远端停止。** 本地客户端被中断时远端命令可能仍在运行；
-  工具会明确说明这一点，条件允许时请优先使用 `detach`。
+- **`credentialRef` points at a plaintext file.** `%DSH_HOME%\.credentials.yaml` is not encrypted. It buys
+  "no password in the conversation", not "encrypted at rest". To get both, use the offline entry channel
+  `scripts/set-secret.mjs`.
+- **The remote host keeps artifacts.** `detach` and background tasks write log files under `/tmp`
+  (`.dsh-ssh-*.log`) that may contain command output. Judge the target's accessibility accordingly and clean
+  up after the task.
+- **`known_hosts` uses `accept-new`.** The first connection trusts and records the host key; later changes
+  are rejected. That defends against a later man-in-the-middle, not one present at first contact. Use
+  `sshConfigFile` if you need strict mode.
+- **A timeout is not a stop.** When the local client is interrupted the remote command may still be running.
+  The plugin says so explicitly; prefer `detach` where the conditions allow.
 
-## 依赖面
+## Dependency surface
 
-零运行时依赖，只调用系统 OpenSSH 客户端（`ssh` / `scp`）。
+Zero runtime dependencies. It only drives the system OpenSSH client (`ssh` / `scp`).

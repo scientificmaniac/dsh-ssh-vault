@@ -1,85 +1,89 @@
-# 贡献指南
+# Contributing
 
-[English](CONTRIBUTING.en.md) | **简体中文**
+**English** | [简体中文](CONTRIBUTING.zh-CN.md)
 
-这个插件会**保管别人的口令**，还要在**别人的机器上执行命令**。所以它的门槛比一般小工具高：
-下面第一节的红线不是风格偏好，破了就是真实泄露或真实事故。
+This plugin **stores other people's passwords** and **runs commands on their machines**. Its bar is
+therefore higher than a typical utility: the red lines in section 1 are not style preferences — breaking
+one means a real leak or a real incident.
 
-## 一、红线（违反即拒绝）
+## 1. Red lines (a violation is grounds for rejection)
 
-### 1. 绝不提交凭据、私钥与真实环境信息
+### 1.1 Never commit credentials, private keys, or real environment details
 
-不要提交：私钥、口令、API key、`%DSH_HOME%` 下的任何文件、真实内网地址、真实主机名、
-真实账号名、会话日志。
+Do not commit: private keys, passwords, API keys, anything under `%DSH_HOME%`, real private addresses, real
+host names, real account names, or session logs.
 
-需要真实主机的测试**一律走环境变量**，源码里不得出现字面值：
+Tests that need a real host **always** take it from the environment; no literal values in the source:
 
 ```js
-// 正确
+// Correct
 const KALI = { host: env.LIVE_KALI_HOST, user: env.LIVE_KALI_USER, pass: env.LIVE_KALI_PASS }
 
-// 错误
-const KALI = { host: '198.51.100.7', user: 'root', pass: '123456' }
+// Wrong
+const KALI = { host: '198.51.100.7', user: 'root', pass: '<password>' }
 ```
 
-示例、测试数据、文档一律使用**文档专用地址**：`192.0.2.0/24`、`198.51.100.0/24`、`203.0.113.0/24`。
+Examples, fixtures, and documentation use **documentation addresses only**: `192.0.2.0/24`,
+`198.51.100.0/24`, `203.0.113.0/24`.
 
-按下提交键之前自查：
+Before you press commit:
 
 ```powershell
-git status --short                 # 确认没有 id_rsa / id_rsa.pub / dist / .env
-git diff --cached                  # 逐眼过一遍，尤其看有没有 IP、账号、口令
+git status --short                 # no id_rsa / id_rsa.pub / dist / .env
+git diff --cached                  # read it, especially for addresses, accounts, passwords
 ```
 
-`.gitignore` 已排除常见项，**但那不是保证**——它挡不住一个叫 `config.local.js` 的新文件。
+`.gitignore` covers the common cases, **but that is not a guarantee** — it will not stop a new file named
+`config.local.js`.
 
-### 2. 口令不得进入命令行、日志或对话
+### 1.2 A password must never reach a command line, a log, or the conversation
 
-这是本项目的核心设计约束。任何改动都必须维持：
+This is the core design constraint of the project. Every change must preserve:
 
-| 位置 | 要求 |
+| Location | Requirement |
 | --- | --- |
-| 本地 `ssh` 命令行 | 口令只能经 `SSH_ASKPASS` 环境变量传递 |
-| 远端命令行与 `ps` | 口令只能走标准输入 |
-| 会话日志 | 工具参数里不得出现口令，只能出现 `sudo: true` 这类开关 |
-| 磁盘 | 只有 AES-256-GCM 密文；明文只允许存在于内存 |
+| Local `ssh` command line | The password may only travel through the `SSH_ASKPASS` environment variable |
+| Remote command line and `ps` | The password may only travel on standard input |
+| Session log | No tool parameter may contain a password; only switches such as `sudo: true` |
+| Disk | Ciphertext only (AES-256-GCM); plaintext is allowed in memory only |
 
-改完执行路径后，必须能通过 `test/live.mjs` 中的「口令不出现在远端进程列表」一项。
+After changing an execution path, the "password does not appear in the remote process list" case in
+`test/live.mjs` must still pass.
 
-### 3. 保持零运行时依赖
+### 1.3 Stay dependency-free
 
-不要引入 npm 依赖。插件只调用系统 OpenSSH 客户端（`ssh` / `scp`）与 Node 内置模块。
-`package.json` 里不应出现 `dependencies`。
+Do not add npm dependencies. The plugin drives the system OpenSSH client (`ssh` / `scp`) and Node built-ins
+only. `package.json` must not gain a `dependencies` block.
 
-### 4. 不擅自改动用户的 profile 或保险库
+### 1.4 Do not touch the user's profile or vault
 
-运行时只读写自己的保险库目录（`%DSH_HOME%\ssh-vault`）。
-不要写 `%DSH_HOME%\.credentials.yaml`、profile 的 `package.json` 或 `cordis.patch.yml`，
-也不要碰用户的 `~/.ssh`。
+At runtime the plugin reads and writes only its own vault directory (`%DSH_HOME%\ssh-vault`). Do not write
+`%DSH_HOME%\.credentials.yaml`, the profile's `package.json` or `cordis.patch.yml`, and do not touch the
+user's `~/.ssh`.
 
-## 二、开发环境
+## 2. Development environment
 
-- Node.js >= 20（见 `package.json` 的 `engines`）
-- Windows 10 1809+ 且启用 OpenSSH 客户端（`ssh -V` 能输出版本）；Linux / macOS 原生可用
-- **不需要 `npm install`**——项目零依赖
+- Node.js >= 20 (see `engines` in `package.json`)
+- Windows 10 1809+ with the OpenSSH Client enabled (`ssh -V` prints a version); Linux and macOS work natively
+- **No `npm install` needed** — the project has no dependencies
 
-## 三、测试
+## 3. Tests
 
-### 提交前必须跑
+### Required before every commit
 
 ```powershell
 npm test
 ```
 
-它依次执行三个**免主机**回归，CI 跑的是同一组：
+It runs three **host-free** suites in order, and CI runs exactly the same set:
 
 ```powershell
-node test/diagnose.mjs     # shell 翻译、八进制解码、失败归因
-node test/unit.mjs         # 参数构造、超时/取消保留输出、wait_for / detach 脚本
-node test/background.mjs   # 后台任务注册契约
+node test/diagnose.mjs     # shell translation, octal decoding, failure attribution
+node test/unit.mjs         # argument construction, timeout/cancel output retention, wait/detach scripts
+node test/background.mjs   # background job registration contract
 ```
 
-### 需要真实主机时
+### When a real host is involved
 
 ```powershell
 $env:LIVE_KALI_HOST = '<host>'
@@ -92,74 +96,81 @@ node test/live.mjs
 node test/selftest.mjs
 ```
 
-### 硬性要求
+### Hard requirements
 
-- 改动 `lib/ssh.js` 的参数构造或诊断 → **必须**补 `test/unit.mjs` / `test/diagnose.mjs` 用例
-- 改动后台任务 → **必须**补 `test/background.mjs`
-- 新增面向模型的行为 → 至少一条单元用例把它钉住
-- **不许为了让测试通过而放宽断言**。如果新用例要求改旧断言，先在 PR 里说明旧断言为什么是错的
+- Touching argument construction or attribution in `lib/ssh.js` → **must** add cases to `test/unit.mjs` /
+  `test/diagnose.mjs`
+- Touching background jobs → **must** add cases to `test/background.mjs`
+- Adding model-facing behaviour → at least one unit case to pin it
+- **Never loosen an assertion to make a suite pass.** If a new case requires changing an old assertion,
+  explain in the pull request why the old assertion was wrong
 
-## 四、代码风格
+## 4. Code style
 
-格式由 [`.editorconfig`](.editorconfig) 约束，另有以下约定：
+Formatting is enforced by [`.editorconfig`](.editorconfig). Conventions on top of it:
 
-- ESM（`import` / `export`），`"type": "module"`
-- 2 空格缩进、单引号、**行尾不加分号**、行宽约 120
-- 导出的函数写 JSDoc（`@param` / `@returns`）；**注释用中文，标识符用英文**
-- 纯函数优先：参数构造（`buildSshArgs`）、脚本生成（`buildWaitScript`、`buildDetachScript`）、
-  归因（`diagnose`）都保持无副作用，这样才测得动
-- 错误信息面向使用者：说清**发生了什么**与**怎么恢复**，不要只把底层错误抛出去
+- ESM (`import` / `export`), `"type": "module"`
+- 2-space indent, single quotes, **no trailing semicolons**, ~120 column width
+- JSDoc (`@param` / `@returns`) on exported functions; **comments in Chinese, identifiers in English**
+- Prefer pure functions: argument construction (`buildSshArgs`), script generation (`buildWaitScript`,
+  `buildDetachScript`) and attribution (`diagnose`) are side-effect free so they stay testable
+- Error messages are written for the user: say **what happened** and **how to recover**, do not just re-throw
+  the underlying error
 
-## 五、提交信息
+## 5. Commit messages
 
-采用 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)：
+[Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-<type>: <简短描述>
+<type>: <short description>
 
-<可选正文：为什么这么改>
+<optional body: why>
 ```
 
-`type` 取 `feat` / `fix` / `docs` / `refactor` / `test` / `chore`。
-标题用英文祈使句，正文中英文皆可。**一次提交只做一件事。**
+`type` is one of `feat` / `fix` / `docs` / `refactor` / `test` / `chore`. Titles are English imperative
+sentences; the body may be Chinese or English. **One commit does one thing.**
 
-## 六、Pull Request
+## 6. Pull requests
 
-1. 行为变更先开 issue 讨论，尤其是涉及权限、执行路径、存储格式的
-2. 分支名 `feat/...`、`fix/...`、`docs/...`
-3. PR 描述写清三件事：**改了什么、为什么、怎么验证的**
-4. 命中以下任一项时，必须在描述里单独说明：
-   - 新增了执行路径（口令会经过哪里）
-   - 保险库格式变化（是否需要迁移，旧数据怎么办）
-   - 新增工具参数（它会不会进入会话日志）
-5. `npm test` 通过，且 `git diff` 里没有凭据
+1. Open an issue first for behaviour changes, especially anything touching permissions, execution paths, or
+   the storage format
+2. Branch names: `feat/...`, `fix/...`, `docs/...`
+3. Say three things in the description: **what changed, why, and how you verified it**
+4. If any of the following applies, call it out explicitly:
+   - a new execution path (where the password travels)
+   - a vault format change (is a migration needed, what happens to existing data)
+   - a new tool parameter (does it carry sensitive data into the session log)
+5. `npm test` passes, and `git diff` contains no credentials
 
-## 七、设计约束（架构层面）
+## 7. Architectural constraints
 
-动代码前先确认没有破坏这些：
+Confirm you have not broken these before changing code:
 
-- **别名寻址**：模型只见别名，地址与凭据由保险库提供。
-  不要新增需要模型传主机名、账号或口令的参数。
-- **中断不等于失明**：任何执行路径在超时或被取消时，都必须回传已经收到的输出。
-- **失败要说清归因**：本地密钥问题、公钥未装机、口令错误、防火墙丢包必须能区分；
-  「账号或口令不正确」只能在前几项都排除之后出现。
-- **长任务不占用工具调用**：优先用 `detach`（远端脱离）与 `wait_for`（条件等待），
-  不要把 `sleep` 轮询写进工具实现。
-- **会话日志是唯一真相**：不新增自定义会话事件；插件状态要么能从日志重建，
-  要么放进保险库或存储服务。
-- **存储格式带版本号**：改动 `vault.json` / `key.json` 结构时必须升版本并能读旧数据。
+- **Alias addressing**: the model sees aliases only; addresses and credentials come from the vault. Do not add
+  a parameter that makes the model pass a host name, account, or password.
+- **An interrupted call is not a blind one**: every execution path must return the output it already received
+  when it times out or is cancelled.
+- **Failures must name the layer**: local key problems, a public key that is not installed, a wrong password,
+  and a firewall drop must be distinguishable. "Wrong account or password" may only appear once the earlier
+  causes are excluded.
+- **Long tasks must not hold a tool call**: prefer `detach` (remote detach) and `wait_for` (condition
+  waiting); do not write `sleep` polling into the implementation.
+- **The session log is the only source of truth**: do not add custom session event types. Plugin state must
+  either be reconstructable from the log or live in the vault / a storage service.
+- **Version your storage format**: changing the shape of `vault.json` / `key.json` requires a version bump
+  and the ability to read old data.
 
-## 八、项目结构
+## 8. Project layout
 
-| 路径 | 职责 |
+| Path | Responsibility |
 | --- | --- |
-| `index.js` | 插件入口、四个模型面向工具、配置解析、凭据解析 |
-| `lib/vault.js` | 加密保险库（AES-256-GCM + DPAPI / scrypt） |
-| `lib/ssh.js` | OpenSSH 驱动：参数构造、askpass 注入、失败归因、等待与脱离脚本 |
-| `lib/background.js` | `ctx.jobs` 后台任务适配 |
-| `scripts/set-secret.mjs` | 离线口令录入（不经过 DSH，也不经过模型） |
-| `test/` | 回归；前三个免主机，后三个需要真实目标 |
+| `index.js` | Plugin entry, the four model-facing tools, config parsing, credential resolution |
+| `lib/vault.js` | Encrypted vault (AES-256-GCM + DPAPI / scrypt) |
+| `lib/ssh.js` | OpenSSH driver: argument construction, askpass injection, attribution, wait/detach scripts |
+| `lib/background.js` | `ctx.jobs` background task adapter |
+| `scripts/set-secret.mjs` | Offline password entry (neither DSH nor the model is involved) |
+| `test/` | Regression; the first three need no host, the rest need a real target |
 
-## 九、许可
+## 9. License
 
-提交贡献即表示同意以 [MIT](LICENSE) 授权。
+By contributing you agree to license your contribution under the [MIT license](LICENSE).

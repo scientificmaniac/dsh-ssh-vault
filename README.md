@@ -318,7 +318,7 @@ The web routes ride on the DSH web server, and unauthenticated requests are refu
 
 ### Reporting a vulnerability
 
-See [SECURITY.md](SECURITY.en.md).
+See [SECURITY.md](SECURITY.md).
 
 ## FAQ
 
@@ -351,7 +351,7 @@ Reload the page. Host-side changes need a DSH restart.
 
 ## Contributing
 
-See [CONTRIBUTING.en.md](CONTRIBUTING.en.md). The hard rules: **zero runtime dependencies** (Node built-ins only on the Host side; only the host-provided `react` on the Client side), no real credentials or addresses in the repo, and a password must never reach a command line or the session log.
+See [CONTRIBUTING.md](CONTRIBUTING.md). The hard rules: **zero runtime dependencies** (Node built-ins only on the Host side; only the host-provided `react` on the Client side), no real credentials or addresses in the repo, and a password must never reach a command line or the session log.
 
 ```bash
 npm test            # host-free regression suite
