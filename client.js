@@ -438,7 +438,7 @@ window.__ModuleLoader__.load({
           setError(result.error)
           return
         }
-        props.onDone()
+        props.onDone(alias.trim())
       }
 
       return h('div', { style: S.form },
@@ -547,40 +547,47 @@ window.__ModuleLoader__.load({
 
       useEffect(() => { load() }, [load])
 
+      /**
+       * 体检一台主机，同时更新卡片上的状态点。
+       * @param alias - 主机别名。
+       * @returns 归一化结果，供下方的详细结果区复用。
+       */
+      const measureHost = useCallback(async (alias) => {
+        setHealth((map) => ({ ...map, [alias]: { status: 'checking' } }))
+        const result = await call('test', { alias })
+        const ok = result.ok === true && result.value.ok === true
+        const detail = result.ok === true ? result.value.detail : result.error
+        const notes = result.ok === true ? (result.value.notes ?? []) : []
+        setHealth((map) => ({ ...map, [alias]: { status: ok ? 'ok' : 'fail', detail } }))
+        return { ok, status: ok ? 'ok' : 'fail', detail, notes }
+      }, [])
+
       // 卡片一出现就各自体检一次。串行执行：同时开一批 SSH 连接对远端不友好，而且
-      // 一台不通的主机（Host 侧给了 8 秒超时）会让并发的其余连接一起挤在超时上。
-      const aliasKey = state.hosts.map((host) => host.alias).join(',')
+      // 一台不通的主机（Host 侧给了 15 秒超时）会让并发的其余连接一起挤在超时上。
+      //
+      // 依赖里带 updatedAt：编辑连接改的是地址/端口/凭据，别名并不变。只看别名的话
+      // 保存后不会重测，旧的红点就一直留在那里。
+      const aliasKey = state.hosts.map((host) => `${host.alias}|${host.updatedAt}`).join(',')
       useEffect(() => {
         if (state.status !== 'ready' || state.hosts.length === 0) return undefined
         let cancelled = false
         const run = async () => {
           for (const host of state.hosts) {
             if (cancelled) return
-            setHealth((map) => ({ ...map, [host.alias]: { status: 'checking' } }))
-            const result = await call('test', { alias: host.alias })
+            await measureHost(host.alias)
             if (cancelled) return
-            setHealth((map) => ({
-              ...map,
-              [host.alias]: result.ok
-                ? { status: result.value.ok ? 'ok' : 'fail', detail: result.value.detail }
-                : { status: 'fail', detail: result.error },
-            }))
           }
         }
         run()
         return () => { cancelled = true }
         // 用 aliasKey 而不是 state.hosts：数组引用每次渲染都变，会变成无限重测。
-      }, [aliasKey, state.status])
+      }, [aliasKey, state.status, measureHost])
 
       const runTest = async (alias) => {
         setTests((map) => ({ ...map, [alias]: { status: 'running' } }))
-        const result = await call('test', { alias })
-        setTests((map) => ({
-          ...map,
-          [alias]: result.ok
-            ? { status: result.value.ok ? 'ok' : 'fail', detail: result.value.detail, notes: result.value.notes ?? [] }
-            : { status: 'fail', detail: result.error, notes: [] },
-        }))
+        // 手动测试也必须走 measureHost：否则测试成功了，卡片上的点还停在红色。
+        const entry = await measureHost(alias)
+        setTests((map) => ({ ...map, [alias]: { status: entry.status, detail: entry.detail, notes: entry.notes } }))
       }
 
       const removeHost = async (alias) => {
@@ -644,7 +651,12 @@ window.__ModuleLoader__.load({
       // 「添加」的表单出现在顶部；「编辑」的表单在**对应卡片下方**就地展开——
       // 表单原先渲染在列表之前，点编辑时会把视线和滚动位置一起拉到页面顶端。
       const formHandlers = {
-        onDone: async () => { setForm(null); await load() },
+        onDone: async (savedAlias) => {
+          setForm(null)
+          await load()
+          // 编辑动的是地址/凭据，保存后必须重测这一台，否则旧的红点会一直挂着。
+          if (typeof savedAlias === 'string' && savedAlias.length > 0) await measureHost(savedAlias)
+        },
         onCancel: () => setForm(null),
       }
       const isEditing = (host) => form !== null && form.mode === 'edit' && form.record !== null && form.record.alias === host.alias
