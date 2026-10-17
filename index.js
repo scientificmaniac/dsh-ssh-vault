@@ -907,6 +907,8 @@ export function apply(ctx, config = {}) {
         const head = invocation.rawInput.split(';')[0]
         const names = head.split(',').map((part) => part.trim()).filter((part) => part.length > 0)
         const usage = '用法：`/hosts 别名,别名;备注` —— 逗号分隔多台，分号之后的内容会被忽略。'
+        // 连通状态用色点表示，比 ✅❌❓ 这类勾叉问号轻，也更像状态灯。
+        const dot = { ok: '🟢', fail: '🔴', unknown: '🟠' }
         try {
           if (names.length === 0) {
             const hosts = await vault.list()
@@ -921,8 +923,8 @@ export function apply(ctx, config = {}) {
               const line = `${record.alias}（${maskHost(record.host)}:${record.port}，`
                 + `${maskUser(record.username)}，${record.auth?.type ?? 'agent'}）`
               const entry = healthCache.get(record.alias)
-              if (entry !== undefined && entry.ok === true) online.push(`- ${line}`)
-              else offline.push(`- ${line}${entry === undefined ? '' : ' — 不可达'}`)
+              if (entry !== undefined && entry.ok === true) online.push(dot.ok + ' ' + line)
+              else offline.push(dot.fail + ' ' + line)
             }
             const sections = [online.length > 0
               ? `在线 ${online.length} 台：\n${online.join('\n')}`
@@ -943,12 +945,12 @@ export function apply(ctx, config = {}) {
             if (result.ok) {
               // 多行 facts 压成一行：一台机器不该把整段对话撑满。
               const facts = result.detail.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
-              lines.push(`✅ ${alias}${facts.length > 0 ? ` — ${facts.join(' · ')}` : ''}`)
+              lines.push(`${dot.ok} ${alias}${facts.length > 0 ? ` — ${facts.join(' · ')}` : ''}`)
             } else {
-              lines.push(`❌ ${alias} — ${result.detail.split('\n')[0].trim() || '连接失败'}`)
+              lines.push(`${dot.fail} ${alias} — ${result.detail.split('\n')[0].trim() || '连接失败'}`)
             }
           }
-          if (unknown.length > 0) lines.push(`❓ 未找到：${unknown.join('、')}（${usage}）`)
+          if (unknown.length > 0) lines.push(`${dot.unknown} 未找到：${unknown.join('、')}（${usage}）`)
           return { kind: 'success', text: lines.join('\n') }
         } catch (error) {
           return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
