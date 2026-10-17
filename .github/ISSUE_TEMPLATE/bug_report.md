@@ -1,7 +1,10 @@
 ---
 name: Bug report
 about: Something does not work as documented
+title: ''
 labels: bug
+assignees: ''
+
 ---
 
 <!--
