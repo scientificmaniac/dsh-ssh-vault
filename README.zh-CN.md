@@ -26,10 +26,17 @@
 dsh plugin --profile desktop install dsh-ssh-vault
 ```
 
-从本地目录安装（开发或未发布时）：
+从本地目录安装。参数是路径，已经在插件目录里时直接用 `.`：
 
 ```bash
-dsh plugin --profile desktop install "E:\ai project\ssh插件"
+# 在插件目录内执行
+dsh plugin --profile desktop install .
+
+# 或从别处指向该目录
+dsh plugin --profile desktop install ../dsh-ssh-vault
+
+# 或从打包好的 tarball 安装
+dsh plugin --profile desktop install ./dsh-ssh-vault-<version>.tgz
 ```
 
 **需要 `--profile`。** DSH 按 profile 隔离插件集，同一台机器可以有多个 profile（如 `desktop` 与 `cli`）。不指定时取决于当前默认 profile，容易出现「装到了别处」。装完用下面的命令确认落点：
@@ -367,7 +374,7 @@ npm run test:live   # 需要真实主机的端到端用例
 ```bash
 # 安装（指定 profile）
 dsh plugin --profile desktop install dsh-ssh-vault
-dsh plugin --profile desktop install "E:\ai project\ssh插件"
+dsh plugin --profile desktop install .        # 在本地插件目录内执行
 
 # 确认装在哪
 dsh plugin --profile desktop list

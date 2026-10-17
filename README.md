@@ -26,10 +26,17 @@ Under the hood it drives the local OpenSSH client (`ssh` / `scp`). It does not i
 dsh plugin --profile desktop install dsh-ssh-vault
 ```
 
-From a local directory (development, or before publishing):
+From a local checkout. The argument is a path, so `.` works when you are already inside the plugin directory:
 
 ```bash
-dsh plugin --profile desktop install "E:\ai project\ssh插件"
+# inside the checkout
+dsh plugin --profile desktop install .
+
+# or point at it from elsewhere
+dsh plugin --profile desktop install ../dsh-ssh-vault
+
+# or install from a packed tarball
+dsh plugin --profile desktop install ./dsh-ssh-vault-<version>.tgz
 ```
 
 **`--profile` is required.** DSH isolates plugins per profile, and one machine can carry several (`desktop`, `cli`, …). Omitting it falls back to whichever profile is currently default, which is an easy way to install into the wrong place. Confirm the landing spot with:
@@ -367,7 +374,7 @@ npm run test:live   # end-to-end cases against real hosts
 ```bash
 # Install (profile required)
 dsh plugin --profile desktop install dsh-ssh-vault
-dsh plugin --profile desktop install "E:\ai project\ssh插件"
+dsh plugin --profile desktop install .        # from inside a local checkout
 
 # Confirm where it landed
 dsh plugin --profile desktop list
