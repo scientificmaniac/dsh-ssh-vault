@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-vault",
-  "version": "1.9.3",
+  "version": "1.9.4",
   "type": "module",
   "description": "Encrypted SSH host vault and model-facing SSH tools for the DeepSeek Harness",
   "license": "MIT",

@@ -131,12 +131,12 @@ be seen in a process list) and never on disk.
 - **Test connection** runs the same probe as `ssh_probe` and shows the result inline, including the failure
   attribution.
 
-## `/ssh` in the conversation
+## `/hosts` in the conversation
 
 ```
-/ssh                 list every configured host
-/ssh kali            probe one host and show the result
-/ssh kali win10      probe several at once
+/hosts               list every configured host
+/hosts kali          probe one host and show the result
+/hosts kali win10    probe several at once
 ```
 
 The command runs on the host and its outcome lands in the session as a command node, so the model sees
@@ -436,7 +436,7 @@ target.
 package.json            bundle manifest (dsh.bundle.patch points at cordis.patch.yml)
 cordis.patch.yml        Loader row definition (id: ssh-vault)
 index.js                plugin entry and the four model-facing tools
-client.js               browser half: the Settings → SSH Connections page and the /ssh command surface
+client.js               browser half: the Settings → SSH Connections page and the /hosts command surface
 lib/vault-api.js        same-origin JSON routes behind the settings page
 lib/vault.js            AES-256-GCM vault + DPAPI / scrypt key protection
 lib/ssh.js              OpenSSH driver: argument construction, askpass, attribution, wait/detach scripts

@@ -881,11 +881,11 @@ export function apply(ctx, config = {}) {
 
   // —— 对话里的 `/ssh <别名>` 快捷调用 ——
   ctx.inject(['commands'], (cmdCtx) => {
-    /** 当前 `/ssh` 的注销句柄；刷新提示时要先注销旧的再注册新的。 */
+    /** 当前 `/hosts` 的注销句柄。 */
     let disposeSshCommand
 
     /**
-     * 注册 `/ssh`。
+     * 注册 `/hosts`。
      *
      * **只注册一次，绝不重注册。** `commands.register` 的 disposer 会销毁当前定义，而用户
      * 很可能正在输入这个命令的参数；定义一换，输入框手里的命令上下文就失效了——退格失灵、
@@ -893,9 +893,12 @@ export function apply(ctx, config = {}) {
      *
      * 代价是 `input.hint` 只能是静态文案（它没有 thunk 形态）。在线主机因此改到无参执行时
      * 列出，而不是塞进提示里。
+     *
+     * 命令名用 `hosts` 而不是 `ssh`：输入框是 Lexical 编辑器，普通文本节点仍受浏览器拼写
+     * 检查约束，`ssh` 会被标红，而 `hosts` 是词典里的词。
      */
     disposeSshCommand = cmdCtx.commands.register({
-      name: 'ssh',
+      name: 'hosts',
       description: '列出已配置的 SSH 主机与在线状态，或探测指定主机以确认可用',
       input: { hint: '[别名...] 省略则按在线状态列出全部主机' },
       handler: async (invocation) => {
@@ -921,7 +924,7 @@ export function apply(ctx, config = {}) {
               ? `在线 ${online.length} 台：\n${online.join('\n')}`
               : '当前没有可达主机。']
             if (offline.length > 0) sections.push(`离线 ${offline.length} 台：\n${offline.join('\n')}`)
-            sections.push('用 `/ssh <别名>` 单独探测一台。')
+            sections.push('用 `/hosts <别名>` 单独探测一台。')
             return { kind: 'success', text: sections.join('\n\n') }
           }
           const sections = []

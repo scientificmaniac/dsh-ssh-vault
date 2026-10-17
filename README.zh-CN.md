@@ -122,12 +122,12 @@ Windows OpenSSH 9.x 支持 `SSH_ASKPASS_REQUIRE=force`：没有终端时改用 `
   并自动收紧权限，不必自己处理文件 ACL；`.pub` 公钥或非密钥文件会被当场拒绝。
 - **测试连接**执行与 `ssh_probe` 相同的自检，并把结果（含失败归因）就地显示出来。
 
-## 对话里的 `/ssh`
+## 对话里的 `/hosts`
 
 ```
-/ssh                 列出全部已配置主机
-/ssh kali            探测一台主机并显示结果
-/ssh kali win10      一次探测多台
+/hosts               列出全部已配置主机
+/hosts kali          探测一台主机并显示结果
+/hosts kali win10    一次探测多台
 ```
 
 命令在宿主执行，结果会作为 command 节点进入会话，模型因此知道你刚激活了哪套环境。
@@ -415,7 +415,7 @@ node test/verify-hash.mjs   # known_hosts 是否自动哈希化
 package.json            bundle 清单（dsh.bundle.patch 指向 cordis.patch.yml）
 cordis.patch.yml        Loader 行定义（id: ssh-vault）
 index.js                插件入口与 4 个模型面向工具
-client.js               浏览器半边：设置 → SSH 连接页，以及 /ssh 指令的面板
+client.js               浏览器半边：设置 → SSH 连接页，以及 /hosts 指令的面板
 lib/vault-api.js        设置页背后的同源 JSON 路由
 lib/vault.js            AES-256-GCM 保险库 + DPAPI / scrypt 密钥保护
 lib/ssh.js              OpenSSH 驱动：参数构造、askpass 注入、失败归因、等待与脱离脚本
