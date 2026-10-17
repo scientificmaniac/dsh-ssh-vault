@@ -643,6 +643,117 @@ window.__ModuleLoader__.load({
             }))
     }
 
+    // —— SSH 工具的对话内终端视图 ——
+    //
+    // 注册点是 `tool.call.toolview`：按**工具名**分发，所以我们只影响自己注册的三个工具，
+    // 不覆盖任何内置 UI（ssh_run / ssh_probe / ssh_transfer 都不在已占用列表里）。
+    // 内置 bash 工具在同一槽位用的是宿主的 TerminalBlock；纯 JS 客户端拿不到宿主包
+    // （builtins 只有 ctx / React / host / styles / console），所以这里自绘一个可滚动终端。
+
+    /**
+     * 从工具节点里取出这次调用的形状。
+     *
+     * 运行中时节点本身就是 call；已结算时挂在 `block.call` 上，结果在 `block.content`。
+     *
+     * @param block - 工具节点。
+     * @returns 归一化的调用视图，或 null（交给通用行）。
+     */
+    function sshCallOf(block) {
+      if (block === null || typeof block !== 'object') return null
+      const settled = Object.prototype.hasOwnProperty.call(block, 'kind')
+      const call = settled ? block.call : block
+      if (call === null || typeof call !== 'object') return null
+      let args = {}
+      try {
+        const parsed = JSON.parse(call.argsRaw)
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed
+      } catch {
+        args = {}
+      }
+      return {
+        settled,
+        name: typeof call.name === 'string' ? call.name : '',
+        args,
+        text: settled ? resultTextOf(block) : '',
+        isError: block.isError === true,
+      }
+    }
+
+    /**
+     * 取结果里的唯一文本块，并剥掉 Host 侧包上的 console 围栏（围栏只是给通用行兜底用的）。
+     * @param block - 已结算的工具节点。
+     * @returns 输出文本。
+     */
+    function resultTextOf(block) {
+      const content = block.content
+      if (!Array.isArray(content) || content.length !== 1) return ''
+      const only = content[0]
+      if (only === null || typeof only !== 'object' || only.type !== 'text' || typeof only.text !== 'string') return ''
+      const fenced = /^```[a-z]*\n([\s\S]*?)\n```$/.exec(only.text)
+      return fenced === null ? only.text : fenced[1]
+    }
+
+    /**
+     * 终端标题行：优先显示实际命令，其余工具给出一行等价描述。
+     * @param call - 归一化的调用视图。
+     * @returns 标题文本。
+     */
+    function sshHeadlineOf(call) {
+      if (typeof call.args.command === 'string' && call.args.command.trim().length > 0) return call.args.command
+      if (call.name === 'ssh_probe') return `ssh_probe ${String(call.args.host ?? '')}`
+      if (call.name === 'ssh_transfer') {
+        const arrow = call.args.direction === 'upload' ? '→' : '←'
+        return `scp ${String(call.args.local ?? '')} ${arrow} ${String(call.args.remote ?? '')}`
+      }
+      return call.name
+    }
+
+    const MONO = 'ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace'
+    const T = {
+      card: {
+        border: `0.5px solid ${C.border}`, borderRadius: C.radiusMd, overflow: 'hidden',
+        // 中性半透明底：深色主题下变深、浅色主题下是淡灰，文字始终走 label-primary 保证对比。
+        background: 'rgba(0,0,0,0.14)',
+      },
+      head: {
+        display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 10px',
+        borderBottom: `0.5px solid ${C.borderSubtle}`, color: C.textDim,
+        fontFamily: MONO, fontSize: '11.5px', lineHeight: 1.5,
+      },
+      dot: { width: '7px', height: '7px', borderRadius: '50%', flex: 'none', background: C.textDim },
+      dotRunning: { width: '7px', height: '7px', borderRadius: '50%', flex: 'none', background: 'var(--dsw-alias-state-business-primary, #4f7cff)' },
+      dotError: { width: '7px', height: '7px', borderRadius: '50%', flex: 'none', background: C.bad },
+      headText: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.text },
+      pre: {
+        margin: 0, padding: '8px 10px', maxHeight: '320px', overflow: 'auto',
+        fontFamily: MONO, fontSize: '12px', lineHeight: 1.55,
+        color: C.text, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+      },
+      empty: { padding: '8px 10px', color: C.textDim, fontSize: '11.5px', fontFamily: MONO },
+    }
+
+    /**
+     * 对话里的 SSH 终端行：标题显示命令与主机，下面是一个可滚动的输出区。
+     * @param props - toolview 运行时注入的阶段数据。
+     * @returns 终端视图。
+     */
+    function SshTerminalRow(props) {
+      const call = sshCallOf(props?.block)
+      if (call === null) return null
+      const running = !call.settled
+      const host = typeof call.args.host === 'string' ? call.args.host : ''
+      const headline = sshHeadlineOf(call)
+      const label = host === '' ? headline : `${host} · ${headline}`
+      const body = call.text.replace(/\n+$/, '')
+      return h('div', { style: T.card },
+        h('div', { style: T.head },
+          h('span', { style: call.isError ? T.dotError : running ? T.dotRunning : T.dot, 'aria-hidden': true }),
+          h('span', { style: T.headText, title: label }, label)),
+        body.length > 0
+          ? h('pre', { style: T.pre }, body)
+          : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))
+    }
+
     return {
       inject: ['slots'],
       apply(ctx) {
@@ -652,6 +763,12 @@ window.__ModuleLoader__.load({
           order: 20,
           label: () => t('sectionTitle'),
         }, SshVaultSettings))
+        // SSH 工具的对话内终端：按工具名分发，只占我们自己的三个名字。
+        ctx.slots.inject('tool.call.toolview', function* () {
+          for (const key of ['ssh_run', 'ssh_probe', 'ssh_transfer']) {
+            yield ctx.slots.register({ name: 'tool.call.toolview', key }, SshTerminalRow)
+          }
+        })
       },
     }
   },
