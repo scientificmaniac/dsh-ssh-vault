@@ -857,6 +857,32 @@ window.__ModuleLoader__.load({
           : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))
     }
 
+    /**
+     * 对话里 `/hosts` 命令行的终端视图。
+     *
+     * 通用命令行卡片会把结果塞进一个无样式的 `<pre>` 并默认折叠，和 `ssh_run` 的终端卡片
+     * 完全不像两种东西。命令名的渲染槽位目前是空的，所以直接接管，复用同一套卡片样式。
+     *
+     * @param props - 命令行注入的节点；`node` 就是这次命令的生命周期数据。
+     * @returns 终端视图。
+     */
+    function HostsCommandRow(props) {
+      const node = props?.node
+      const outcome = node?.outcome
+      const running = outcome === null || outcome === undefined
+      const text = typeof outcome?.text === 'string' ? outcome.text : ''
+      const failed = !running && outcome.kind === 'error'
+      const name = typeof node?.name === 'string' && node.name.length > 0 ? node.name : 'hosts'
+      return h('div', { style: T.card },
+        h('div', { style: T.head },
+          h('span', { style: failed ? T.dotError : running ? T.dotRunning : T.dot, 'aria-hidden': true }),
+          h('span', { style: T.headText }, `/${name}`),
+          failed ? h('span', { style: T.statusBadge }, 'error') : null),
+        text.length > 0
+          ? h('pre', { style: T.pre }, text)
+          : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))
+    }
+
     return {
       inject: ['slots'],
       apply(ctx) {
@@ -872,6 +898,11 @@ window.__ModuleLoader__.load({
             yield ctx.slots.register({ name: 'tool.call.toolview', key }, SshTerminalRow)
           }
         })
+        // `/hosts` 命令自己的行：让它的输出也呈终端样式，而不是通用的折叠 <pre>。
+        ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
+          name: 'conversation.chat.commandview',
+          key: 'hosts',
+        }, HostsCommandRow))
       },
     }
   },
