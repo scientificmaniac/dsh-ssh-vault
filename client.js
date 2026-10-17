@@ -708,6 +708,28 @@ window.__ModuleLoader__.load({
       return call.name
     }
 
+    /**
+     * 把输出拆成正文与退出状态。
+     *
+     * 标记约定与 Host 侧渲染一致：`[exit code: N]` / `[killed by signal: X]`。退出码要从
+     * 正文里摘掉，否则同一次失败会既出现在文本里又出现在状态标签上。标记后面还可能跟着
+     * 诊断建议，所以匹配不要求它位于整段文本的最末尾。
+     *
+     * @param text - 工具结果文本。
+     * @returns 去掉标记的正文，以及退出码或终止信号。
+     */
+    function splitTerminalStatus(text) {
+      const signal = /\n\[killed by signal: ([^\]\n]+)\](?:\n|$)/.exec(text)
+      if (signal !== null) {
+        return { body: text.replace(signal[0], '\n').replace(/\n+$/, ''), signal: signal[1], exitCode: undefined }
+      }
+      const exit = /\n\[exit code: (\d+)\](?:\n|$)/.exec(text)
+      if (exit !== null) {
+        return { body: text.replace(exit[0], '\n').replace(/\n+$/, ''), signal: undefined, exitCode: Number(exit[1]) }
+      }
+      return { body: text.replace(/\n+$/, ''), signal: undefined, exitCode: 0 }
+    }
+
     const MONO = 'ui-monospace, SFMono-Regular, Consolas, "Courier New", monospace'
     const T = {
       card: {
@@ -730,6 +752,10 @@ window.__ModuleLoader__.load({
         color: C.text, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
       },
       empty: { padding: '8px 10px', color: C.textDim, fontSize: '11.5px', fontFamily: MONO },
+      statusBadge: {
+        marginLeft: 'auto', flex: 'none', padding: '0 6px', borderRadius: '999px',
+        border: `0.5px solid ${C.border}`, fontSize: '10.5px', color: C.textDim,
+      },
     }
 
     /**
@@ -744,11 +770,19 @@ window.__ModuleLoader__.load({
       const host = typeof call.args.host === 'string' ? call.args.host : ''
       const headline = sshHeadlineOf(call)
       const label = host === '' ? headline : `${host} · ${headline}`
-      const body = call.text.replace(/\n+$/, '')
+      const status = splitTerminalStatus(call.text)
+      // 非零退出码不算错误返回（工具按约定不抛错），但状态点必须反映它，否则失败看起来是成功的。
+      const failed = call.isError || status.signal !== undefined
+        || (status.exitCode !== undefined && status.exitCode !== 0)
+      const badge = status.signal !== undefined
+        ? status.signal
+        : status.exitCode !== undefined && status.exitCode !== 0 ? `exit ${status.exitCode}` : null
+      const body = status.body
       return h('div', { style: T.card },
         h('div', { style: T.head },
-          h('span', { style: call.isError ? T.dotError : running ? T.dotRunning : T.dot, 'aria-hidden': true }),
-          h('span', { style: T.headText, title: label }, label)),
+          h('span', { style: failed ? T.dotError : running ? T.dotRunning : T.dot, 'aria-hidden': true }),
+          h('span', { style: T.headText, title: label }, label),
+          badge !== null ? h('span', { style: T.statusBadge }, badge) : null),
         body.length > 0
           ? h('pre', { style: T.pre }, body)
           : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))
