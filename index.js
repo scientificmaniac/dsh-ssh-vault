@@ -855,6 +855,13 @@ export function apply(ctx, config = {}) {
   const HOSTS_COMMAND_TIMEOUT_MS = 120000
   /** `/hosts` 单台主机最多回显多少行输出，防止一条命令刷满整段对话。 */
   const HOSTS_OUTPUT_MAX_LINES = 40
+  /**
+   * 探测段与命令执行段之间的分隔行。
+   *
+   * Client 端按它把一次 `/hosts` 拆成两张卡片：一张回答「连上了没有」，一张回答「命令跑了什么」。
+   * 纯文本协议不理想，但命令结果只有 `text` 一个通道，这是能拿到结构化边界的唯一办法。
+   */
+  const EXEC_SECTION_MARK = '─── 命令执行 ───'
 
   /**
    * 体检全部主机并写入缓存。
@@ -947,7 +954,10 @@ export function apply(ctx, config = {}) {
           // 先剔掉不存在的别名，免得把「找不到」混进连接失败里。
           const known = new Set((await vault.list()).map((host) => host.alias))
           const unknown = names.filter((alias) => !known.has(alias))
-          const lines = []
+          // 探测与命令执行分两段输出，中间用一条分隔行标记：对话里会渲染成两张卡片，
+          // 「连上了没有」和「命令跑了什么」不再挤在同一块里。
+          const probeLines = []
+          const execLines = []
           let anyFailed = false
           for (const alias of names) {
             if (!known.has(alias)) continue
@@ -955,15 +965,15 @@ export function apply(ctx, config = {}) {
             healthCache.set(alias, { ok: probe.ok === true, at: Date.now() })
             if (!probe.ok) {
               anyFailed = true
-              lines.push(`${alias} — ${probe.detail.split('\n')[0].trim() || '连接失败'}`)
+              probeLines.push(`${alias} — ${probe.detail.split('\n')[0].trim() || '连接失败'}`)
               continue
             }
             // 多行 facts 压成一行：一台机器不该把整段对话撑满。
             const facts = probe.detail.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
-            lines.push(`${alias}${facts.length > 0 ? ` — ${facts.join(' · ')}` : ''}`)
+            probeLines.push(`${alias}${facts.length > 0 ? ` — ${facts.join(' · ')}` : ''}`)
             if (remoteCommand.length === 0) continue
 
-            lines.push(`  $ ${remoteCommand}`)
+            execLines.push(`${alias}  $ ${remoteCommand}`)
             const record = await requireHost(alias)
             // 命令以 sudo 开头就预置 sudo 缓存：否则非交互 SSH 下会干等密码直到超时。
             let sudoPassword
@@ -979,23 +989,25 @@ export function apply(ctx, config = {}) {
               .trim()
             if (output.length > 0) {
               const clipped = output.split('\n').slice(0, HOSTS_OUTPUT_MAX_LINES)
-              lines.push(clipped.map((line) => `  ${line}`).join('\n'))
-              if (output.split('\n').length > HOSTS_OUTPUT_MAX_LINES) lines.push(`  …（输出已截断）`)
+              execLines.push(clipped.map((line) => `  ${line}`).join('\n'))
+              if (output.split('\n').length > HOSTS_OUTPUT_MAX_LINES) execLines.push('  …（输出已截断）')
             }
             if (run.timedOut === true) {
               anyFailed = true
-              lines.push(`  [超时：${HOSTS_COMMAND_TIMEOUT_MS}ms 内未结束]`)
+              execLines.push(`  [超时：${HOSTS_COMMAND_TIMEOUT_MS}ms 内未结束]`)
             } else if (run.exitCode !== 0 && run.exitCode !== null) {
               anyFailed = true
-              lines.push(`  [exit ${run.exitCode}]`)
+              execLines.push(`  [exit ${run.exitCode}]`)
             }
           }
           if (unknown.length > 0) {
             anyFailed = true
-            lines.push(`未找到：${unknown.join('、')}（${usage}）`)
+            probeLines.push(`未找到：${unknown.join('、')}（${usage}）`)
           }
+          const sections = [probeLines.join('\n')]
+          if (execLines.length > 0) sections.push(`${EXEC_SECTION_MARK}\n${execLines.join('\n')}`)
           // 整体成败交给 kind：标题行的圆点据此显示绿或红，正文不必再带符号。
-          return { kind: anyFailed ? 'error' : 'success', text: lines.join('\n') }
+          return { kind: anyFailed ? 'error' : 'success', text: sections.join('\n\n') }
         } catch (error) {
           return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
         }

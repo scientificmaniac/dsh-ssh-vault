@@ -860,11 +860,28 @@ window.__ModuleLoader__.load({
           : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))
     }
 
+    /** 与 Host 侧约定的分隔行：出现了它就说明有命令执行段。 */
+    const EXEC_MARK = '─── 命令执行 ───'
+
+    /**
+     * 把一次 `/hosts` 的输出拆成「连接状态」和「命令执行」两段。
+     * @param text - 命令结果文本。
+     * @returns 第一段内容，以及第二段内容（没有则为 null）。
+     */
+    function splitExecSections(text) {
+      const index = text.indexOf(EXEC_MARK)
+      if (index < 0) return [text.trim(), null]
+      return [text.slice(0, index).trim(), text.slice(index + EXEC_MARK.length).trim()]
+    }
+
     /**
      * 对话里 `/hosts` 命令行的终端视图。
      *
      * 通用命令行卡片会把结果塞进一个无样式的 `<pre>` 并默认折叠，和 `ssh_run` 的终端卡片
      * 完全不像两种东西。命令名的渲染槽位目前是空的，所以直接接管，复用同一套卡片样式。
+     *
+     * 探测与命令执行分成两张卡：前者回答「连上了没有」，后者回答「命令跑了什么」，
+     * 混在一块时两类信息会互相干扰。
      *
      * @param props - 命令行注入的节点；`node` 就是这次命令的生命周期数据。
      * @returns 终端视图。
@@ -876,15 +893,27 @@ window.__ModuleLoader__.load({
       const text = typeof outcome?.text === 'string' ? outcome.text : ''
       const failed = !running && outcome.kind === 'error'
       const name = typeof node?.name === 'string' && node.name.length > 0 ? node.name : 'hosts'
-      return h('div', { style: T.card },
-        h('div', { style: T.head },
-          // 这一个圆点就是整条命令的状态灯：绿=全部可达，红=有失败，蓝=还在跑。
-          h('span', { style: failed ? T.dotError : running ? T.dotRunning : T.dotOk, 'aria-hidden': true }),
-          h('span', { style: T.headText }, `/${name}`),
-          failed ? h('span', { style: T.statusBadge }, '有失败') : null),
-        text.length > 0
-          ? h('pre', { style: T.pre }, text)
-          : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))
+      const [probeText, execText] = splitExecSections(text)
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+        h('div', { style: T.card },
+          h('div', { style: T.head },
+            // 这一个圆点就是整条命令的状态灯：绿=全部成功，红=有失败，蓝=还在跑。
+            h('span', { style: failed ? T.dotError : running ? T.dotRunning : T.dotOk, 'aria-hidden': true }),
+            h('span', { style: T.headText }, `/${name}`),
+            execText === null ? null : h('span', { style: T.statusBadge }, '连接状态'),
+            failed ? h('span', { style: T.statusBadge }, '有失败') : null),
+          probeText.length > 0
+            ? h('pre', { style: T.pre }, probeText)
+            : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）')),
+        execText === null
+          ? null
+          : h('div', { style: T.card },
+            h('div', { style: T.head },
+              h('span', { style: running ? T.dotRunning : T.dot, 'aria-hidden': true }),
+              h('span', { style: T.headText }, '命令执行')),
+            execText.length > 0
+              ? h('pre', { style: T.pre }, execText)
+              : h('div', { style: T.empty }, '（无输出）')))
     }
 
     return {
