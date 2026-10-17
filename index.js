@@ -14,8 +14,8 @@
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
-import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, parseExitStatus, probeCommand, renderTerminalBlock, runRemote, shellKind, transferFile } from './lib/ssh.js'
-import { API_PREFIX, createVaultApi } from './lib/vault-api.js'
+import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, formatSshHint, parseExitStatus, probeCommand, renderTerminalBlock, runRemote, shellKind, transferFile } from './lib/ssh.js'
+import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi } from './lib/vault-api.js'
 import { Vault, defaultVaultDir, maskHost, maskUser } from './lib/vault.js'
 
 /** 插件名（同时是 Loader 行的 id）。 */
@@ -839,6 +839,46 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // —— 连通性缓存 ——
+  //
+  // 一次探测要真连 SSH（一台不通就 8 秒），不能在用户敲命令时现测。缓存结果、后台定期
+  // 刷新，`/ssh` 的输入提示与无参输出都读这份缓存。
+  /** alias -> { ok, at } */
+  const healthCache = new Map()
+  /** 后台体检间隔。 */
+  const HEALTH_REFRESH_MS = 5 * 60 * 1000
+
+  /**
+   * 体检全部主机并写入缓存。
+   * @returns 是否拿到了结果。
+   */
+  const refreshHealth = async () => {
+    try {
+      const hosts = await vault.list()
+      for (const host of hosts) {
+        const result = await probeHost(host.alias, SETTINGS_PROBE_TIMEOUT_MS)
+        healthCache.set(host.alias, { ok: result.ok === true, at: Date.now() })
+      }
+      const live = new Set(hosts.map((host) => host.alias))
+      for (const alias of [...healthCache.keys()]) {
+        if (!live.has(alias)) healthCache.delete(alias)
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * `/ssh` 的输入提示：把当前在线的主机直接摆出来。
+   *
+   * 命令参数没有候选列表机制（`CommandInputDescriptor` 只有 `hint` 一个字段），
+   * 所以能做的"辅助提示"就是把在线主机写进这行提示，并随体检结果刷新。
+   *
+   * @returns 提示文本。
+   */
+  const sshHint = () => formatSshHint(Object.fromEntries(healthCache))
+
   // —— 设置界面的管理接口：口令经 HTTP body 提交，不进入会话日志 ——
   ctx.inject(['webServer'], (webCtx) => {
     const api = createVaultApi({ vault, vaultDir, probe: probeHost, logger: ctx.logger })
@@ -847,40 +887,85 @@ export function apply(ctx, config = {}) {
 
   // —— 对话里的 `/ssh <别名>` 快捷调用 ——
   ctx.inject(['commands'], (cmdCtx) => {
-    cmdCtx.effect(() => cmdCtx.commands.register({
-      name: 'ssh',
-      description: '列出已配置的 SSH 主机，或探测指定主机以确认可用',
-      input: { hint: '[别名...] 省略则列出全部主机' },
-      handler: async (invocation) => {
-        const names = invocation.rawInput.trim().split(/\s+/).filter((part) => part.length > 0)
-        try {
-          if (names.length === 0) {
-            const hosts = await vault.list()
-            if (hosts.length === 0) {
-              return { kind: 'success', text: 'SSH 保险库为空。可在「设置 → SSH 连接」中添加主机。' }
+    /** 当前 `/ssh` 的注销句柄；刷新提示时要先注销旧的再注册新的。 */
+    let disposeSshCommand
+
+    /**
+     * 注册（或重新注册）`/ssh`。
+     *
+     * `input.hint` 在注册那一刻就固定了，所以在线主机变化后必须重注册，提示才会跟着变。
+     */
+    const registerSshCommand = () => {
+      disposeSshCommand?.()
+      disposeSshCommand = cmdCtx.commands.register({
+        name: 'ssh',
+        description: '列出已配置的 SSH 主机与在线状态，或探测指定主机以确认可用',
+        input: { hint: sshHint() },
+        handler: async (invocation) => {
+          const names = invocation.rawInput.trim().split(/\s+/).filter((part) => part.length > 0)
+          try {
+            if (names.length === 0) {
+              const hosts = await vault.list()
+              if (hosts.length === 0) {
+                return { kind: 'success', text: 'SSH 保险库为空。可在「设置 → SSH 连接」中添加主机。' }
+              }
+              // 还没有体检结果就现测一遍；已有结果就直接用，别让无参调用白等一轮探测。
+              if (healthCache.size === 0) await refreshHealth()
+              const online = []
+              const offline = []
+              for (const record of hosts) {
+                const line = `- ${record.alias}（${maskHost(record.host)}:${record.port}，`
+                  + `${maskUser(record.username)}，${record.auth?.type ?? 'agent'}）`
+                const entry = healthCache.get(record.alias)
+                if (entry !== undefined && entry.ok === true) online.push(line)
+                else offline.push(`${line}${entry === undefined ? '' : ' — 不可达'}`)
+              }
+              const sections = [online.length > 0
+                ? `在线 ${online.length} 台：\n${online.join('\n')}`
+                : '当前没有可达主机。']
+              if (offline.length > 0) sections.push(`离线 ${offline.length} 台：\n${offline.join('\n')}`)
+              sections.push('用 `/ssh <别名>` 单独探测一台。')
+              // 顺带把输入提示刷新到最新状态。
+              registerSshCommand()
+              return { kind: 'success', text: sections.join('\n\n') }
             }
-            const lines = hosts.map((record) => `- ${record.alias}（${maskHost(record.host)}:${record.port}，`
-              + `${maskUser(record.username)}，${record.auth?.type ?? 'agent'}，shell ${record.shell ?? 'bash'}）`)
-            return {
-              kind: 'success',
-              text: `已配置 ${hosts.length} 台 SSH 主机：\n${lines.join('\n')}\n\n用 \`/ssh <别名>\` 探测其中一台。`,
+            const sections = []
+            for (const alias of names) {
+              const result = await probeHost(alias, SETTINGS_PROBE_TIMEOUT_MS)
+              healthCache.set(alias, { ok: result.ok === true, at: Date.now() })
+              sections.push([
+                result.ok ? `✅ ${alias}` : `❌ ${alias}`,
+                result.detail,
+                ...(result.notes ?? []),
+              ].filter((line) => typeof line === 'string' && line.length > 0).join('\n'))
             }
+            registerSshCommand()
+            return { kind: 'success', text: sections.join('\n\n') }
+          } catch (error) {
+            return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
           }
-          const sections = []
-          for (const alias of names) {
-            const result = await probeHost(alias)
-            sections.push([
-              result.ok ? `✅ ${alias}` : `❌ ${alias}`,
-              result.detail,
-              ...(result.notes ?? []),
-            ].filter((line) => typeof line === 'string' && line.length > 0).join('\n'))
-          }
-          return { kind: 'success', text: sections.join('\n\n') }
-        } catch (error) {
-          return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
-        }
-      },
-    }))
+        },
+      })
+    }
+
+    registerSshCommand()
+    cmdCtx.effect(() => {
+      let stopped = false
+      const tick = async () => {
+        if (stopped) return
+        const ok = await refreshHealth()
+        if (!stopped && ok) registerSshCommand()
+      }
+      // 首次延后几秒：别让插件激活时的启动过程被一串 SSH 握手拖住。
+      const warmup = setTimeout(tick, 3000)
+      const timer = setInterval(tick, HEALTH_REFRESH_MS)
+      return () => {
+        stopped = true
+        clearTimeout(warmup)
+        clearInterval(timer)
+        disposeSshCommand?.()
+      }
+    })
   })
 }
 
