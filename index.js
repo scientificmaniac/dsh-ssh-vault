@@ -856,12 +856,21 @@ export function apply(ctx, config = {}) {
   /** `/hosts` 单台主机最多回显多少行输出，防止一条命令刷满整段对话。 */
   const HOSTS_OUTPUT_MAX_LINES = 40
   /**
-   * 探测段与命令执行段之间的分隔行。
+   * 两段的分节标题。
    *
-   * Client 端按它把一次 `/hosts` 拆成两张卡片：一张回答「连上了没有」，一张回答「命令跑了什么」。
-   * 纯文本协议不理想，但命令结果只有 `text` 一个通道，这是能拿到结构化边界的唯一办法。
+   * Client 端按这些标记把一次 `/hosts` 拆成两张卡片，并**各自**判断该亮绿还是红——
+   * 「连上了没有」和「命令跑成功没有」是两个独立的事实，混用一个标志会让连通的卡片
+   * 因为命令失败而变红。
    */
-  const EXEC_SECTION_MARK = '─── 命令执行 ───'
+  const PROBE_SECTION = '连接状态'
+  const EXEC_SECTION = '命令执行'
+  /**
+   * 生成一条分节标记，形如 `─── 连接状态:ok ───`。
+   * @param title - 段名。
+   * @param failed - 该段是否有失败。
+   * @returns 标记行。
+   */
+  const sectionMark = (title, failed) => `─── ${title}:${failed ? 'fail' : 'ok'} ───`
 
   /**
    * 体检全部主机并写入缓存。
@@ -954,17 +963,18 @@ export function apply(ctx, config = {}) {
           // 先剔掉不存在的别名，免得把「找不到」混进连接失败里。
           const known = new Set((await vault.list()).map((host) => host.alias))
           const unknown = names.filter((alias) => !known.has(alias))
-          // 探测与命令执行分两段输出，中间用一条分隔行标记：对话里会渲染成两张卡片，
-          // 「连上了没有」和「命令跑了什么」不再挤在同一块里。
+          // 探测与命令执行分两段输出，各自带一个状态标记：对话里渲染成两张卡片，
+          // 「连上了没有」和「命令跑了什么」不但分开显示，也各自亮各自的灯。
           const probeLines = []
           const execLines = []
-          let anyFailed = false
+          let probeFailed = false
+          let execFailed = false
           for (const alias of names) {
             if (!known.has(alias)) continue
             const probe = await probeHost(alias, SETTINGS_PROBE_TIMEOUT_MS)
             healthCache.set(alias, { ok: probe.ok === true, at: Date.now() })
             if (!probe.ok) {
-              anyFailed = true
+              probeFailed = true
               probeLines.push(`${alias} — ${probe.detail.split('\n')[0].trim() || '连接失败'}`)
               continue
             }
@@ -993,21 +1003,23 @@ export function apply(ctx, config = {}) {
               if (output.split('\n').length > HOSTS_OUTPUT_MAX_LINES) execLines.push('  …（输出已截断）')
             }
             if (run.timedOut === true) {
-              anyFailed = true
+              execFailed = true
               execLines.push(`  [超时：${HOSTS_COMMAND_TIMEOUT_MS}ms 内未结束]`)
             } else if (run.exitCode !== 0 && run.exitCode !== null) {
-              anyFailed = true
+              execFailed = true
               execLines.push(`  [exit ${run.exitCode}]`)
             }
           }
           if (unknown.length > 0) {
-            anyFailed = true
+            probeFailed = true
             probeLines.push(`未找到：${unknown.join('、')}（${usage}）`)
           }
-          const sections = [probeLines.join('\n')]
-          if (execLines.length > 0) sections.push(`${EXEC_SECTION_MARK}\n${execLines.join('\n')}`)
-          // 整体成败交给 kind：标题行的圆点据此显示绿或红，正文不必再带符号。
-          return { kind: anyFailed ? 'error' : 'success', text: sections.join('\n\n') }
+          const sections = [`${sectionMark(PROBE_SECTION, probeFailed)}\n${probeLines.join('\n')}`]
+          if (execLines.length > 0) {
+            sections.push(`${sectionMark(EXEC_SECTION, execFailed)}\n${execLines.join('\n')}`)
+          }
+          // 整体成败仍交给 kind（会话卡片以外的通用呈现会用到），但两张卡片各自按分段标记亮灯。
+          return { kind: probeFailed || execFailed ? 'error' : 'success', text: sections.join('\n\n') }
         } catch (error) {
           return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
         }
