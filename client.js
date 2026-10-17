@@ -812,6 +812,7 @@ window.__ModuleLoader__.load({
         fontFamily: MONO, fontSize: '11.5px', lineHeight: 1.5,
       },
       dot: { width: '7px', height: '7px', borderRadius: '50%', flex: 'none', background: C.textDim },
+      dotOk: { width: '7px', height: '7px', borderRadius: '50%', flex: 'none', background: C.ok },
       dotRunning: { width: '7px', height: '7px', borderRadius: '50%', flex: 'none', background: 'var(--dsw-alias-state-business-primary, #4f7cff)' },
       dotError: { width: '7px', height: '7px', borderRadius: '50%', flex: 'none', background: C.bad },
       headText: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.text },
@@ -875,9 +876,10 @@ window.__ModuleLoader__.load({
       const name = typeof node?.name === 'string' && node.name.length > 0 ? node.name : 'hosts'
       return h('div', { style: T.card },
         h('div', { style: T.head },
-          h('span', { style: failed ? T.dotError : running ? T.dotRunning : T.dot, 'aria-hidden': true }),
+          // 这一个圆点就是整条命令的状态灯：绿=全部可达，红=有失败，蓝=还在跑。
+          h('span', { style: failed ? T.dotError : running ? T.dotRunning : T.dotOk, 'aria-hidden': true }),
           h('span', { style: T.headText }, `/${name}`),
-          failed ? h('span', { style: T.statusBadge }, 'error') : null),
+          failed ? h('span', { style: T.statusBadge }, '有失败') : null),
         text.length > 0
           ? h('pre', { style: T.pre }, text)
           : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))
