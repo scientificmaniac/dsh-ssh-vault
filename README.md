@@ -136,7 +136,7 @@ be seen in a process list) and never on disk.
 ```
 /hosts               list every configured host
 /hosts kali          probe one host and show the result
-/hosts kali win10    probe several at once
+/hosts kali,win10;    probe several at once; anything after the semicolon is ignored
 ```
 
 The command runs on the host and its outcome lands in the session as a command node, so the model sees

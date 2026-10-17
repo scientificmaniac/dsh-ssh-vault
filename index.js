@@ -900,9 +900,13 @@ export function apply(ctx, config = {}) {
     disposeSshCommand = cmdCtx.commands.register({
       name: 'hosts',
       description: '列出已配置的 SSH 主机与在线状态，或探测指定主机以确认可用',
-      input: { hint: '[别名...] 省略则按在线状态列出全部主机' },
+      input: { hint: '别名,别名;（逗号分隔多台，分号后内容忽略）' },
       handler: async (invocation) => {
-        const names = invocation.rawInput.trim().split(/\s+/).filter((part) => part.length > 0)
+        // 参数只认「逗号分隔 + 分号结尾」。分号之后的都是用户自己的话，直接丢弃——
+        // 这样 `/hosts kali,win10; 试一下 apt update` 不会把后面的词当成主机名。
+        const head = invocation.rawInput.split(';')[0]
+        const names = head.split(',').map((part) => part.trim()).filter((part) => part.length > 0)
+        const usage = '用法：`/hosts 别名,别名;备注` —— 逗号分隔多台，分号之后的内容会被忽略。'
         try {
           if (names.length === 0) {
             const hosts = await vault.list()
@@ -914,30 +918,38 @@ export function apply(ctx, config = {}) {
             const online = []
             const offline = []
             for (const record of hosts) {
-              const line = `- ${record.alias}（${maskHost(record.host)}:${record.port}，`
+              const line = `${record.alias}（${maskHost(record.host)}:${record.port}，`
                 + `${maskUser(record.username)}，${record.auth?.type ?? 'agent'}）`
               const entry = healthCache.get(record.alias)
-              if (entry !== undefined && entry.ok === true) online.push(line)
-              else offline.push(`${line}${entry === undefined ? '' : ' — 不可达'}`)
+              if (entry !== undefined && entry.ok === true) online.push(`- ${line}`)
+              else offline.push(`- ${line}${entry === undefined ? '' : ' — 不可达'}`)
             }
             const sections = [online.length > 0
               ? `在线 ${online.length} 台：\n${online.join('\n')}`
               : '当前没有可达主机。']
             if (offline.length > 0) sections.push(`离线 ${offline.length} 台：\n${offline.join('\n')}`)
-            sections.push('用 `/hosts <别名>` 单独探测一台。')
+            sections.push(usage)
             return { kind: 'success', text: sections.join('\n\n') }
           }
-          const sections = []
+
+          // 先剔掉不存在的别名，免得把「找不到」混进连接失败里。
+          const known = new Set((await vault.list()).map((host) => host.alias))
+          const unknown = names.filter((alias) => !known.has(alias))
+          const lines = []
           for (const alias of names) {
+            if (!known.has(alias)) continue
             const result = await probeHost(alias, SETTINGS_PROBE_TIMEOUT_MS)
             healthCache.set(alias, { ok: result.ok === true, at: Date.now() })
-            sections.push([
-              result.ok ? `✅ ${alias}` : `❌ ${alias}`,
-              result.detail,
-              ...(result.notes ?? []),
-            ].filter((line) => typeof line === 'string' && line.length > 0).join('\n'))
+            if (result.ok) {
+              // 多行 facts 压成一行：一台机器不该把整段对话撑满。
+              const facts = result.detail.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
+              lines.push(`✅ ${alias}${facts.length > 0 ? ` — ${facts.join(' · ')}` : ''}`)
+            } else {
+              lines.push(`❌ ${alias} — ${result.detail.split('\n')[0].trim() || '连接失败'}`)
+            }
           }
-          return { kind: 'success', text: sections.join('\n\n') }
+          if (unknown.length > 0) lines.push(`❓ 未找到：${unknown.join('、')}（${usage}）`)
+          return { kind: 'success', text: lines.join('\n') }
         } catch (error) {
           return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
         }
