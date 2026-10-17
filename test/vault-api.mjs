@@ -9,7 +9,7 @@
 import { rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { API_PREFIX, createVaultApi } from '../lib/vault-api.js'
+import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi } from '../lib/vault-api.js'
 
 /**
  * 测试用的保险库目录。走系统临时目录，因为「上传私钥」的用例会真的落盘；
@@ -309,7 +309,7 @@ await rm(VAULT_DIR, { recursive: true, force: true })
   })
   const result = await invoke(handler, `${API_PREFIX}/test`, { alias: 'demo' })
   check('test 成功返回', result.envelope.ok === true, JSON.stringify(result.envelope))
-  check('test 把短超时传给 probe', seen.length === 1 && seen[0].timeoutMs === 8000, JSON.stringify(seen))
+  check('test 把短超时传给 probe', seen.length === 1 && seen[0].timeoutMs === SETTINGS_PROBE_TIMEOUT_MS, JSON.stringify(seen))
 }
 
 console.log(`${passed} 项通过，${failures.length} 项失败`)

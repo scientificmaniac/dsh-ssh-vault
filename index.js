@@ -825,7 +825,11 @@ export function apply(ctx, config = {}) {
       }
       return {
         ok: false,
-        detail: (result.stderr ?? '').trim() || '(no output)',
+        // 超时常常意味着"主机活着但 SSH 端口不通"或"地址变了"，而不是命令本身失败；
+        // 退回一句 (no output) 会把这个区别抹掉，让人以为是插件的问题。
+        detail: (result.stderr ?? '').trim() || (result.timedOut === true
+          ? `连接在 ${normalizeTimeout(timeoutMs)}ms 内未建立：主机可能在线但 SSH 端口不通，或地址已变`
+          : '(no output)'),
         notes: result.notes ?? [],
         exitCode: result.exitCode,
       }
@@ -841,8 +845,8 @@ export function apply(ctx, config = {}) {
 
   // —— 连通性缓存 ——
   //
-  // 一次探测要真连 SSH（一台不通就 8 秒），不能在用户敲命令时现测。缓存结果、后台定期
-  // 刷新，`/ssh` 的输入提示与无参输出都读这份缓存。
+  // 一次探测要真连 SSH，不能在用户敲命令时现测。缓存结果、后台定期刷新，
+  // `/ssh` 的输入提示与无参输出都读这份缓存。
   /** alias -> { ok, at } */
   const healthCache = new Map()
   /** 后台体检间隔。 */
