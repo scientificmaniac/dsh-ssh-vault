@@ -122,6 +122,20 @@ check('归因 sudo 建议 sudo:true', sudoNoTty.includes('sudo: true'), sudoNoTt
 const timedOut = notesFor('', true)
 check('归因 超时指向后台执行', timedOut.includes('run_in_background'), timedOut)
 
+// —— 账户锁定：Windows OpenSSH 对锁定账户直接断开，伪装成网络故障 ——
+const resetLooksLikeLock = notesFor('ssh: connect to host 192.0.2.10 port 22: Connection reset by peer')
+check('归因 连接重置提示账户锁定', resetLooksLikeLock.includes('账户已被锁定'), resetLooksLikeLock)
+check('归因 连接重置给出检查命令', resetLooksLikeLock.includes('net user') || resetLooksLikeLock.includes('faillock'), resetLooksLikeLock)
+check('归因 连接重置不会只归因防火墙', !/^\s*连接在握手阶段被对端关闭：通常是防火墙/.test(resetLooksLikeLock), resetLooksLikeLock)
+
+const explicitLock = notesFor('Permission denied (publickey,password). Account active Locked')
+check('归因 明确锁定文案被识别', explicitLock.includes('账户已被锁定'), explicitLock)
+check('归因 明确锁定说明密钥同样无效', explicitLock.includes('任何凭据'), explicitLock)
+
+// 普通认证失败不应误报锁定：否则每次密码错都会被引向账户状态。
+const plainDenied = notesFor('kxfz@192.0.2.10: Permission denied (publickey,password)', false, { authType: 'password' })
+check('归因 普通认证失败不误报锁定', !plainDenied.includes('账户已被锁定'), plainDenied)
+
 console.log(`${passed} 项通过，${failures.length} 项失败`)
 for (const failure of failures) console.error(`FAIL: ${failure}`)
 if (failures.length > 0) process.exit(1)

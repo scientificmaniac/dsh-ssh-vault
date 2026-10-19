@@ -10,6 +10,15 @@ All notable changes to this project are documented here. The format follows
 
 Nothing pending.
 
+## [1.14.1] - 2026-10-19
+
+### Fixed
+
+- **PowerShell no longer floods stderr with CLIXML.** Once the script moved to
+  `-EncodedCommand`, PowerShell serialized its progress stream into CLIXML and wrote that to
+  stderr, burying real errors under a wall of XML. The script now sets
+  `\Continue = 'SilentlyContinue'` and the invocation passes `-OutputFormat Text`.
+
 ## [1.14.0] - 2026-10-19
 
 ### Fixed

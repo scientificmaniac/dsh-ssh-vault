@@ -75,8 +75,8 @@ const psArgs = buildSshArgs({
   record: { ...passwordRecord, shell: 'powershell' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: psScript,
 })
 check('ssh powershell 用 EncodedCommand',
-  psArgs.slice(-5, -1).join(' ') === 'powershell -NoProfile -NonInteractive -EncodedCommand',
-  psArgs.slice(-5, -1).join(' '))
+  psArgs.slice(-7, -1).join(' ') === 'powershell -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand',
+  psArgs.slice(-7, -1).join(' '))
 check('ssh powershell 不再依赖 stdin 的 -Command -',
   !psArgs.includes('-Command'), psArgs.join(' '))
 
