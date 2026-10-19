@@ -10,6 +10,16 @@ All notable changes to this project are documented here. The format follows
 
 Nothing pending.
 
+## [1.14.2] - 2026-10-19
+
+### Fixed
+
+- **PowerShell error output is plain text again.** -OutputFormat Text governs stdout only:
+  powershell.exe still serialized the error stream as CLIXML onto stderr and echoed the
+  entire script back as error context, burying real messages under XML. The script now merges
+  the error stream into stdout itself and flattens each ErrorRecord to a single
+  [error] … line, with Out-String -Stream keeping object and table output intact.
+
 ## [1.14.1] - 2026-10-19
 
 ### Fixed
@@ -17,7 +27,7 @@ Nothing pending.
 - **PowerShell no longer floods stderr with CLIXML.** Once the script moved to
   `-EncodedCommand`, PowerShell serialized its progress stream into CLIXML and wrote that to
   stderr, burying real errors under a wall of XML. The script now sets
-  `\Continue = 'SilentlyContinue'` and the invocation passes `-OutputFormat Text`.
+  `\Continue = 'SilentlyContinue'` and the invocation passes -OutputFormat Text.
 
 ## [1.14.0] - 2026-10-19
 

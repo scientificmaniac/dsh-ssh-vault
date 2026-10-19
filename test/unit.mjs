@@ -75,8 +75,8 @@ const psArgs = buildSshArgs({
   record: { ...passwordRecord, shell: 'powershell' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: psScript,
 })
 check('ssh powershell 用 EncodedCommand',
-  psArgs.slice(-7, -1).join(' ') === 'powershell -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand',
-  psArgs.slice(-7, -1).join(' '))
+  psArgs.slice(-5, -1).join(' ') === 'powershell -NoProfile -NonInteractive -EncodedCommand',
+  psArgs.slice(-5, -1).join(' '))
 check('ssh powershell 不再依赖 stdin 的 -Command -',
   !psArgs.includes('-Command'), psArgs.join(' '))
 
@@ -85,6 +85,11 @@ const psEncoded = psArgs[psArgs.length - 1]
 const psDecoded = Buffer.from(psEncoded, 'base64').toString('utf16le')
 check('powershell 脚本完整回环', psDecoded.includes(psScript.trimEnd()), JSON.stringify(psDecoded))
 check('powershell 输出编码已固定', psDecoded.startsWith('[Console]::OutputEncoding'), JSON.stringify(psDecoded.slice(0, 60)))
+// error 流必须在脚本内部就并入 stdout，否则 powershell.exe 会把整段脚本当成错误上下文
+// 序列化成 CLIXML 写进 stderr。
+check('powershell 合并 error 流', psDecoded.includes('} 2>&1 | ForEach-Object'), JSON.stringify(psDecoded.slice(-160)))
+check('powershell 压平 ErrorRecord', psDecoded.includes('[error] '), JSON.stringify(psDecoded.slice(-160)))
+check('powershell 关闭进度条', psDecoded.includes('$ProgressPreference'), JSON.stringify(psDecoded.slice(0, 120)))
 
 // 对照：POSIX 与 cmd 仍走 stdin，不应把脚本塞进参数。
 const posixArgs = buildSshArgs({

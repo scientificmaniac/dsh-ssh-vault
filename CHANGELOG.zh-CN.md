@@ -9,13 +9,22 @@
 
 无待发布内容。
 
+## [1.14.2] - 2026-10-19
+
+### 修复
+
+- **PowerShell 的错误输出恢复为纯文本。** -OutputFormat Text 只作用于 stdout：
+  powershell.exe 仍会把 error 流序列化成 CLIXML 写进 stderr，并把整段脚本当作错误
+  上下文回显，真正的信息被 XML 埋掉。现在脚本内部就把 error 流并入 stdout，并把每个
+  ErrorRecord 压成一行 [error] …，Out-String -Stream 保留对象与表格输出。
+
 ## [1.14.1] - 2026-10-19
 
 ### 修复
 
 - **PowerShell 不再用 CLIXML 灌满 stderr。** 脚本改用 `-EncodedCommand` 之后，PowerShell
   把进度流序列化成 CLIXML 写进 stderr，真正的错误被一整段 XML 淹没。现在脚本开头设置
-  `\Continue = 'SilentlyContinue'`，调用时加 `-OutputFormat Text`。
+  `\Continue = 'SilentlyContinue'`，调用时加 -OutputFormat Text。
 
 ## [1.14.0] - 2026-10-19
 
