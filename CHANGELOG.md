@@ -10,6 +10,38 @@ All notable changes to this project are documented here. The format follows
 
 Nothing pending.
 
+## [1.14.0] - 2026-10-19
+
+### Fixed
+
+- **Multi-line PowerShell no longer fails silently.** `-Command -` reads stdin line by line,
+  so a here-string (`@'…'@`) or a `foreach (…) {…}` block was split apart mid-parse. The
+  resulting syntax errors did not come back as a non-zero exit, so the caller was told the
+  command had run when it had not. PowerShell targets now receive the whole script through
+  `-EncodedCommand` (Base64 UTF-16LE) and are parsed in one pass; `[Console]::OutputEncoding`
+  is fixed at the head of the script so non-ASCII output stays readable.
+- **`ssh_transfer` no longer misattributes a broken connection.** The path hint fired even
+  when the transfer died on a connection reset, sending diagnosis toward the wrong layer.
+- **Account lock is now a named cause.** Windows OpenSSH disconnects a locked account outright
+  instead of returning `Permission denied`, so "port open, banner fine, still cannot connect"
+  previously pointed only at firewalls. It now names account lock as a candidate and says how
+  to check it (`net user` on Windows, `faillock` on Linux).
+
+### Added
+
+- **Connections to the same host are serialised.** Every call opens a fresh SSH connection; a
+  burst of them, especially concurrent `scp`, trips sshd's connection limits and accumulates
+  failed-auth counters toward an account lock. Background jobs stay outside the queue so a
+  long task cannot block that host for everything else.
+- `ssh_transfer` creates the local parent directory before a download.
+- A warning before commands that change account state or lockout policy, since locking the
+  management account also kills key-based login.
+
+### Changed
+
+- `shellArgv` takes the script and returns `-EncodedCommand` for PowerShell; POSIX and `cmd`
+  targets still receive their script over stdin.
+
 ## [1.13.0] - 2026-10-17
 
 ### Added

@@ -273,8 +273,22 @@ The two halves behave differently, and this is easy to get wrong:
 
 ### Concurrency
 
+- **Connections to one host are serialised in-process.** Every call opens a fresh SSH
+  connection, and a burst of them — especially concurrent `scp` — trips sshd's connection
+  limits and accumulates failed-auth counters toward an account lock. Background jobs are
+  exempt from the queue so a long task does not block that host for everything else.
 - **The vault has no cross-process lock.** Two DSH instances (different profiles pointing at the same vault directory) writing at the same time means the later write wins
 - Within one profile, writes from several sessions serialize on the event loop, but frequent concurrent edits of the same host are still not advisable
+
+### Account lockout
+
+Windows OpenSSH disconnects a **locked** account outright instead of returning
+`Permission denied`, so a locked account looks like a network problem: the port answers, the
+banner arrives, then the connection is reset. If "port open, banner fine, still cannot
+connect" shows up, check the account before chasing the firewall — `net user <account>` on
+Windows, `faillock --user <account>` on Linux. Locking the management account also kills
+key-based login, so keep a second administrative path available when experimenting with
+lockout policy. `ssh_run` warns before commands that change account state.
 
 ### Host keys
 

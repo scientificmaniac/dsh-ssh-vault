@@ -70,8 +70,31 @@ check('ssh 源地址在目标之前', boundArgs.indexOf('-b') < boundArgs.indexO
 
 const winArgs = buildSshArgs({ record: { ...passwordRecord, shell: 'cmd' }, knownHostsPath, connectTimeoutSec: 10 })
 check('ssh cmd shell', winArgs.slice(-2).join(' ') === 'cmd.exe /Q', winArgs.slice(-2).join(' '))
-const psArgs = buildSshArgs({ record: { ...passwordRecord, shell: 'powershell' }, knownHostsPath, connectTimeoutSec: 10 })
-check('ssh powershell shell', psArgs.slice(-5).join(' ') === 'powershell -NoProfile -NonInteractive -Command -', psArgs.slice(-5).join(' '))
+const psScript = "foreach ($j in @('a','b')) { Write-Output $j }\nWrite-Output 'done'\n"
+const psArgs = buildSshArgs({
+  record: { ...passwordRecord, shell: 'powershell' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: psScript,
+})
+check('ssh powershell 用 EncodedCommand',
+  psArgs.slice(-5, -1).join(' ') === 'powershell -NoProfile -NonInteractive -EncodedCommand',
+  psArgs.slice(-5, -1).join(' '))
+check('ssh powershell 不再依赖 stdin 的 -Command -',
+  !psArgs.includes('-Command'), psArgs.join(' '))
+
+// 编码后的内容必须能原样解回：多行块、here-string、数组字面量一个字都不能少。
+const psEncoded = psArgs[psArgs.length - 1]
+const psDecoded = Buffer.from(psEncoded, 'base64').toString('utf16le')
+check('powershell 脚本完整回环', psDecoded.includes(psScript.trimEnd()), JSON.stringify(psDecoded))
+check('powershell 输出编码已固定', psDecoded.startsWith('[Console]::OutputEncoding'), JSON.stringify(psDecoded.slice(0, 60)))
+
+// 对照：POSIX 与 cmd 仍走 stdin，不应把脚本塞进参数。
+const posixArgs = buildSshArgs({
+  record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'echo hi\n',
+})
+check('posix 仍用 -s 走 stdin', posixArgs.slice(-2).join(' ') === 'bash -s', posixArgs.slice(-2).join(' '))
+const cmdArgs = buildSshArgs({
+  record: { ...passwordRecord, shell: 'cmd' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'dir\n',
+})
+check('cmd 不被编码进参数', cmdArgs.slice(-2).join(' ') === 'cmd.exe /Q', cmdArgs.slice(-2).join(' '))
 
 const keyArgs = buildSshArgs({ record: keyRecord, knownHostsPath, connectTimeoutSec: 10 })
 check('ssh 密钥文件', optionValue(keyArgs, '-i') === 'C:\\keys\\id_rsa', keyArgs.join(' '))

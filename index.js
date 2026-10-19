@@ -11,8 +11,8 @@
  * @module dsh-ssh-vault
  */
 
-import { readFile } from 'node:fs/promises'
-import { isAbsolute, resolve } from 'node:path'
+import { mkdir, readFile } from 'node:fs/promises'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
 import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, looksLikeNaturalLanguage, parseExitStatus, probeCommand, renderTerminalBlock, runRemote, shellKind, transferFile } from './lib/ssh.js'
 import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi } from './lib/vault-api.js'
@@ -315,6 +315,31 @@ export function apply(ctx, config = {}) {
     return Math.min(value, MAX_TIMEOUT_MS)
   }
 
+  // —— 同一主机上的连接串行化 ——
+  //
+  // 每次调用都新建 SSH 连接。短时间并发一批（尤其 scp）会触发 sshd 的连接数限制；更糟的是
+  // 反复的失败登录会累积失败计数，把账户推向锁定——Windows 上账号一旦被锁，连密钥登录都会
+  // 一起失效，整条管理通道断掉。
+  //
+  // 这里按别名排队，让同一台主机同一时刻只有一个连接在跑。后台任务不进这条队列，否则一个
+  // 长任务会把该主机上所有后续调用堵死。
+  /** alias -> 队尾 Promise */
+  const hostQueues = new Map()
+
+  /**
+   * 在同一主机的串行队列里执行任务。
+   * @param alias - 主机别名。
+   * @param task - 要执行的任务。
+   * @returns 任务结果。
+   */
+  function withHostLock(alias, task) {
+    const previous = hostQueues.get(alias) ?? Promise.resolve()
+    // 前一个任务的成败不影响后一个入队，队列只负责排序。
+    const next = previous.catch(() => {}).then(task)
+    hostQueues.set(alias, next.catch(() => {}))
+    return next
+  }
+
   /**
    * 前台执行一次命令，并在调用被取消时仍然交回已收到的输出。
    * @param spec - 连接与命令参数。
@@ -322,7 +347,7 @@ export function apply(ctx, config = {}) {
    * @returns 面向模型的文本。
    */
   const runForeground = async (spec, signal) => {
-    const result = await runRemote({ ...spec, signal })
+    const result = await withHostLock(spec.record.alias, () => runRemote({ ...spec, signal }))
     if (result.aborted) {
       const error = new Error(
         '工具调用被取消；本地 ssh 客户端已结束，但远端命令可能仍在运行。\n'
@@ -615,6 +640,14 @@ export function apply(ctx, config = {}) {
           + '口令不进命令文本、不进两端命令行，也不会出现在远端 ps 里。')
       }
 
+      // 会改账户或锁定策略的命令：先把风险说清楚，再执行。
+      if (typeof args.command === 'string'
+        && /net\s+accounts|account\s*lockout|lockout\s*threshold|net\s+user\s+\S+\s+\/active:no|usermod\s+-L|passwd\s+-l|faillock/i.test(args.command)) {
+        notes.push('⚠ 这条命令会修改账户状态或锁定策略。若同时在同一台机器上反复用某个账号试登录，'
+          + '可能把它锁死——Windows 账号一旦锁定，连密钥登录都会一起失效，只能从另一台机器用别的账号解锁。'
+          + '执行前请确认已有一条可用的备用管理通道。')
+      }
+
       let sudoPassword
       if (args.sudo === true) {
         if (shellKind(record.shell) !== 'posix') {
@@ -732,15 +765,20 @@ export function apply(ctx, config = {}) {
       const record = await requireHost(args.host)
       const cwd = exec.agent?.session?.header?.cwd
       const local = isAbsolute(args.local) || cwd === undefined ? args.local : resolve(cwd, args.local)
+      // 下载时自动创建本地父目录。scp 自己不会建，原先用户必须先手工 mkdir 一次，
+      // 而且那时候失败信息还会把原因引向"远端路径不存在"。
+      if (args.direction === 'download') {
+        await mkdir(dirname(local), { recursive: true })
+      }
       const connection = await connectionFor(record, normalizeTimeout(args.timeoutMs), args.bindAddress)
-      const result = await transferFile({
+      const result = await withHostLock(record.alias, () => transferFile({
         ...connection,
         direction: args.direction,
         local,
         remote: args.remote,
         recursive: args.recursive === true,
         signal: exec.signal,
-      })
+      }))
       if (result.aborted) {
         throw new Error(`传输被取消；远端可能已收到部分文件。\n${result.stderr?.trim() ?? ''}`)
       }
@@ -785,7 +823,7 @@ export function apply(ctx, config = {}) {
     execute: async (args, exec) => {
       const record = await requireHost(args.host)
       const connection = await connectionFor(record, normalizeTimeout(args.timeoutMs), args.bindAddress)
-      const result = await runRemote({ ...connection, command: probeCommand(record.shell), signal: exec.signal })
+      const result = await withHostLock(record.alias, () => runRemote({ ...connection, command: probeCommand(record.shell), signal: exec.signal }))
       if (result.aborted) throw new Error(`探测被取消。\n${renderRun(result)}`)
       const reachable = result.exitCode === 0
       const endpoint = revealByDefault ? `${record.host}:${record.port}` : `${maskHost(record.host)}:${record.port}`
@@ -814,7 +852,7 @@ export function apply(ctx, config = {}) {
     try {
       const record = await requireHost(alias)
       const connection = await connectionFor(record, normalizeTimeout(timeoutMs), undefined)
-      const result = await runRemote({ ...connection, command: probeCommand(record.shell) })
+      const result = await withHostLock(record.alias, () => runRemote({ ...connection, command: probeCommand(record.shell) }))
       if (result.exitCode === 0) {
         const facts = (result.stdout ?? '')
           .split('\n')
@@ -1004,7 +1042,7 @@ export function apply(ctx, config = {}) {
               sudoPassword = resolved.value
             }
             const connection = await connectionFor(record, normalizeTimeout(HOSTS_COMMAND_TIMEOUT_MS), undefined)
-            const run = await runRemote({ ...connection, command: remoteCommand, sudoPassword })
+            const run = await withHostLock(alias, () => runRemote({ ...connection, command: remoteCommand, sudoPassword }))
             const output = [run.stdout, run.stderr]
               .filter((part) => typeof part === 'string' && part.trim().length > 0)
               .join('\n')
