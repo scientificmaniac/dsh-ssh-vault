@@ -10,6 +10,50 @@ All notable changes to this project are documented here. The format follows
 
 Nothing pending.
 
+## [1.15.0] - 2026-10-24
+
+### Added
+
+- **The plugin follows the DSH interface language.** With DSH switched to English, the
+  Settings page, the `/` menu entries, the in-conversation SSH cards, `/hosts` results,
+  transport diagnostics and Settings-API errors are English too; switching back changes them
+  immediately, with no page reload or restart.
+  - The Client half registers an `ssh-vault` dictionary with the host's locale service, so
+    slot-rendered copy tracks the active locale.
+  - The Host half reads `locale.preference` from the host settings document (the value the
+    language picker persists) and follows `settings/document-updated`; `Accept-Language` is
+    used only when no explicit preference exists.
+  - Model-facing definitions — tool names, descriptions and parameter schemas — stay in
+    English, because they are part of the model interface rather than the UI.
+- `test/i18n.mjs`, `test/host-apply.mjs` and `test/client-smoke.mjs` cover dictionary
+  completeness (placeholder parity, no untranslated English entries), the host activation and
+  locale-switch path, and the client slot/dictionary wiring.
+
+### Changed
+
+- Host-side copy moved into `lib/i18n.js` plus `lib/locales/ssh.js`; the Chinese values are
+  byte-for-byte the previous strings, so existing behaviour and tests are unchanged.
+- **`/hosts` is re-registered only when the interface language changes.** The command's
+  `description` and `input.hint` are static strings captured at registration; timers never
+  touch the definition (that was the historical cause of a composer losing its command
+  context mid-typing), but a locale switch is a deliberate Settings action with no command
+  being typed, so replacing the definition there is safe.
+- The `/hosts` hint now says that pressing Enter again lists the hosts, which makes the
+  two-step menu-pick behaviour explicit.
+
+### Fixed
+
+- **A bare `/hosts` no longer appears to hang.** On a cold health cache the command used to
+  probe every host sequentially with the 15s settings timeout, so five unreachable hosts meant
+  up to 75 seconds of no visible result — and the result then landed above a message the user
+  had sent in the meantime. Probes now run in parallel with a 4s budget for the list form.
+- **`/hosts` results are visible before the first message.** DSH classifies a transcript
+  containing only command rows as an inactive view, so in a brand-new conversation the command
+  ran and logged its result but nothing rendered; the cards only appeared (above the new
+  message) once the first prompt was sent. The plugin now mirrors those command nodes —
+  including the running state — in the composer dock while the session is still blank, and
+  steps aside as soon as the transcript has real content.
+
 ## [1.14.2] - 2026-10-19
 
 ### Fixed

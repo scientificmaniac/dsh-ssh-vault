@@ -14,6 +14,7 @@
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
+import { LOCALE_SETTINGS_NAMESPACE, applyPreference, onLocaleChange, readLocalePreference, t } from './lib/i18n.js'
 import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, looksLikeNaturalLanguage, parseExitStatus, probeCommand, renderTerminalBlock, runRemote, shellKind, transferFile } from './lib/ssh.js'
 import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi } from './lib/vault-api.js'
 import { Vault, defaultVaultDir, maskHost, maskUser } from './lib/vault.js'
@@ -84,25 +85,25 @@ function terminalCall(title, host) {
  */
 async function inspectPrivateKey(keyPath) {
   const target = typeof keyPath === 'string' ? keyPath.trim() : ''
-  if (target.length === 0) return 'privateKeyPath 不能为空。'
+  if (target.length === 0) return t('err.keyEmpty')
   if (/\.pub$/i.test(target)) {
-    return `${target} 以 .pub 结尾，是公钥文件。公钥不能用于登录，请提供配套的私钥文件（如 id_rsa）。`
+    return t('err.keyPublicSuffix', { path: target })
   }
   let content
   try {
     content = await readFile(target, 'utf8')
   } catch (error) {
-    return `无法读取 ${target}：${error instanceof Error ? error.message : String(error)}`
+    return t('err.keyReadFailed', { path: target, message: error instanceof Error ? error.message : String(error) })
   }
   const firstLine = (content.split(/\r?\n/, 1)[0] ?? '').trim()
   if (/^(ssh-rsa|ssh-ed25519|ssh-dss|ecdsa-sha2-|sk-ssh-|sk-ecdsa-)\b/.test(firstLine)) {
-    return `${target} 的内容是公钥（以 ${firstLine.split(/\s+/)[0]} 开头），不能用于登录。`
+    return t('err.keyPublicContent', { path: target, prefix: firstLine.split(/\s+/)[0] })
   }
   if (/^PuTTY-User-Key-File/.test(firstLine)) {
-    return `${target} 是 PuTTY 的 .ppk 格式，OpenSSH 无法直接使用；请先用 puttygen 导出 OpenSSH 私钥。`
+    return t('err.keyPpkPath', { path: target })
   }
   if (!/PRIVATE KEY/.test(content.slice(0, 8192))) {
-    return `${target} 看起来不是 OpenSSH/PEM 私钥文件。`
+    return t('err.keyNotPemPath', { path: target })
   }
   return undefined
 }
@@ -143,8 +144,8 @@ function renderRun(result) {
     body += '\n[output truncated]'
   }
   const markers = []
-  if (result.timedOut === true) markers.push('[本地客户端已按时限中断]')
-  if (result.aborted === true) markers.push('[调用被取消]')
+  if (result.timedOut === true) markers.push(t('marker.timedOut'))
+  if (result.aborted === true) markers.push(t('marker.cancelled'))
   if (result.exitCode !== 0 && result.exitCode !== null) markers.push(`[exit code: ${result.exitCode}]`)
   if (Array.isArray(result.notes)) markers.push(...result.notes)
   if (markers.length > 0) body += `\n${markers.join('\n')}`
@@ -176,6 +177,40 @@ export function apply(ctx, config = {}) {
     keyProtection,
     masterPassword: config.masterPassword,
     logger: ctx.logger,
+  })
+
+  // —— 界面语言：跟随 DSH 的「设置 → 常规 → 语言」——
+  //
+  // 用户的显式选择由 `@deepseek-ai/dsh-client-locale` 写进 Host 设置（`locale.preference`），
+  // 所以 Host 侧也能读到——不靠浏览器语言猜，否则「DSH 切成英文、系统是中文」时永远猜错。
+  // settings 服务可能比本插件晚就绪，因此首次读取重试几次；之后的切换由文档更新事件驱动。
+  ctx.inject(['settings'], (settingsCtx) => {
+    const sync = () => {
+      try {
+        const preference = readLocalePreference(settingsCtx.settings)
+        if (preference !== undefined) applyPreference(preference)
+      } catch {
+        // settings 尚未就绪：留给下一次重试或文档更新事件。
+      }
+    }
+    settingsCtx.effect(() => {
+      const off = settingsCtx.on('settings/document-updated', (namespace) => {
+        if (String(namespace) !== LOCALE_SETTINGS_NAMESPACE) return
+        sync()
+      })
+      // 先同步读一次：多数情况下 settings 已经就绪，命令的初始注册就能用对语言。
+      sync()
+      // 首次激活时 settings 可能还没就绪；几次重试足够覆盖启动窗口。定时器不阻止进程退出。
+      const timers = [250, 1000, 3000].map((delay) => {
+        const timer = setTimeout(sync, delay)
+        timer.unref?.()
+        return timer
+      })
+      return () => {
+        off()
+        for (const timer of timers) clearTimeout(timer)
+      }
+    }, 'ssh-vault: locale preference')
   })
 
   // known_hosts 默认落在保险库目录里，因此永不触碰用户的 ~/.ssh。
@@ -223,20 +258,20 @@ export function apply(ctx, config = {}) {
       if (storedPassword !== undefined) {
         return {
           value: storedPassword,
-          note: `主机 ${record.alias} 配置了 credentialRef=${record.credentialRef}，但该引用当前不可用`
-            + (credentials === undefined ? '（当前组合没有凭据服务）' : '（尚未配置，或写入凭据文件后未重启 DSH Desktop）')
-            + '；本次已回退使用保险库中保存的口令。',
+          note: t('err.credentialRefFallback', {
+            alias: record.alias,
+            ref: record.credentialRef,
+            reason: credentials === undefined
+              ? t('err.credentialsServiceAbsent')
+              : t('err.credentialsNotConfigured'),
+          }),
         }
       }
-      throw new Error(
-        `主机 ${record.alias} 引用的凭据 ${record.credentialRef} 当前不可用，且保险库中没有可回退的口令。`
-        + '请在 Harness 中配置该引用（新增引用需要重启 DSH Desktop），'
-        + `或用 scripts/set-secret.mjs ${record.alias} 把口令写入保险库。`,
-      )
+      throw new Error(t('err.credentialRefUnavailable', { alias: record.alias, ref: record.credentialRef }))
     }
     if (record.auth?.type === 'password') {
       if (storedPassword === undefined) {
-        throw new Error(`主机 ${record.alias} 未保存口令，且没有可用的 credentialRef。`)
+        throw new Error(t('err.noPassword', { alias: record.alias }))
       }
       return { value: storedPassword }
     }
@@ -267,15 +302,15 @@ export function apply(ctx, config = {}) {
    */
   const requireHost = async (alias) => {
     if (typeof alias !== 'string' || alias.trim().length === 0) {
-      throw new Error('必须提供主机别名 alias。')
+      throw new Error(t('err.aliasRequired'))
     }
     const record = await vault.get(alias)
     if (record === undefined) {
       const known = (await vault.list()).map((h) => h.alias)
-      throw new Error(
-        `保险库中没有名为 ${alias} 的主机。`
-        + (known.length > 0 ? `现有主机：${known.join(', ')}。` : '当前保险库为空，请先用 ssh_hosts 的 add 动作添加主机。'),
-      )
+      throw new Error(t('err.aliasNotFound', {
+        alias,
+        hint: known.length > 0 ? t('err.knownHosts', { list: known.join(', ') }) : t('err.vaultEmptyHint'),
+      }))
     }
     return record
   }
@@ -349,10 +384,7 @@ export function apply(ctx, config = {}) {
   const runForeground = async (spec, signal) => {
     const result = await withHostLock(spec.record.alias, () => runRemote({ ...spec, signal }))
     if (result.aborted) {
-      const error = new Error(
-        '工具调用被取消；本地 ssh 客户端已结束，但远端命令可能仍在运行。\n'
-        + `取消前已收到的输出：\n${renderRun(result)}`,
-      )
+      const error = new Error(t('msg.cancelledWithOutput', { output: renderRun(result) }))
       error.name = 'AbortError'
       throw error
     }
@@ -636,35 +668,25 @@ export function apply(ctx, config = {}) {
 
       // 手写 `sudo -S`：提醒一次，口令其实不必进命令文本。
       if (args.sudo !== true && typeof args.command === 'string' && /sudo\s+-S/.test(args.command)) {
-        notes.push('提示：命令里出现了 `sudo -S` 手写口令。改用 ssh_run 的 sudo: true——插件会从保险库取口令预置 sudo 缓存，'
-          + '口令不进命令文本、不进两端命令行，也不会出现在远端 ps 里。')
+        notes.push(t('note.sudoInline'))
       }
 
       // 会改账户或锁定策略的命令：先把风险说清楚，再执行。
       if (typeof args.command === 'string'
         && /net\s+accounts|account\s*lockout|lockout\s*threshold|net\s+user\s+\S+\s+\/active:no|usermod\s+-L|passwd\s+-l|faillock/i.test(args.command)) {
-        notes.push('⚠ 这条命令会修改账户状态或锁定策略。若同时在同一台机器上反复用某个账号试登录，'
-          + '可能把它锁死——Windows 账号一旦锁定，连密钥登录都会一起失效，只能从另一台机器用别的账号解锁。'
-          + '执行前请确认已有一条可用的备用管理通道。')
+        notes.push(t('note.accountLockRisk'))
       }
 
       let sudoPassword
       if (args.sudo === true) {
         if (shellKind(record.shell) !== 'posix') {
-          throw new Error(
-            `主机 ${record.alias} 的远端 shell 是 ${record.shell}，没有 sudo。`
-            + 'Windows 目标请改用管理员凭据或计划任务执行特权操作。',
-          )
+          throw new Error(t('err.noSudoOnWindows', { alias: record.alias, shell: record.shell }))
         }
         const resolvedSudo = await resolveSudoPassword(record)
         sudoPassword = resolvedSudo.value
         if (resolvedSudo.note !== undefined) notes.push(resolvedSudo.note)
         if (typeof sudoPassword !== 'string' || sudoPassword.length === 0) {
-          throw new Error(
-            `主机 ${record.alias} 没有可用于 sudo 的口令：可用 ssh_hosts 的 update 传 sudoPassword，`
-            + `或用 scripts/set-secret.mjs ${record.alias} --sudo 从终端录入，`
-            + '也可以让该主机使用口令认证（保险库里的登录口令会被复用）。',
-          )
+          throw new Error(t('err.noSudoPassword', { alias: record.alias }))
         }
       }
 
@@ -691,20 +713,16 @@ export function apply(ctx, config = {}) {
       if (args.run_in_background === true) {
         const registry = ctx.get('jobs')
         if (registry === undefined) {
-          throw new Error(
-            '后台执行不可用：当前组合没有 jobs 服务（需要 @deepseek-ai/dsh-jobs 与 @deepseek-ai/dsh-tool-jobs）。'
-            + '去掉 run_in_background 并提高 timeoutMs 也能得到中断前的全部输出。',
-          )
+          throw new Error(t('err.jobsUnavailable'))
         }
         const connection = await connectionFor(record, 0, args.bindAddress, notes)
         let jobId
         try {
           jobId = registerSshJob(registry, { ...connection, command, sudoPassword }, { owner: exec.agent?.id })
         } catch (error) {
-          throw new Error(
-            `后台任务注册失败：${error instanceof Error ? error.message : String(error)}。`
-            + '可以去掉 run_in_background 并为该命令提高 timeoutMs。',
-          )
+          throw new Error(t('err.backgroundRegister', {
+            message: error instanceof Error ? error.message : String(error),
+          }))
         }
         return `started background job ${jobId}\n`
           + `The command keeps running on ${record.alias}. Read newer output with job_output and stop it with job_kill.`
@@ -780,7 +798,7 @@ export function apply(ctx, config = {}) {
         signal: exec.signal,
       }))
       if (result.aborted) {
-        throw new Error(`传输被取消；远端可能已收到部分文件。\n${result.stderr?.trim() ?? ''}`)
+        throw new Error(t('err.transferCancelled', { stderr: result.stderr?.trim() ?? '' }))
       }
       const verb = args.direction === 'upload' ? 'Uploaded to' : 'Downloaded from'
       const head = result.exitCode === 0
@@ -824,7 +842,7 @@ export function apply(ctx, config = {}) {
       const record = await requireHost(args.host)
       const connection = await connectionFor(record, normalizeTimeout(args.timeoutMs), args.bindAddress)
       const result = await withHostLock(record.alias, () => runRemote({ ...connection, command: probeCommand(record.shell), signal: exec.signal }))
-      if (result.aborted) throw new Error(`探测被取消。\n${renderRun(result)}`)
+      if (result.aborted) throw new Error(t('err.probeCancelled', { output: renderRun(result) }))
       const reachable = result.exitCode === 0
       const endpoint = revealByDefault ? `${record.host}:${record.port}` : `${maskHost(record.host)}:${record.port}`
       const account = revealByDefault ? record.username : maskUser(record.username)
@@ -866,7 +884,7 @@ export function apply(ctx, config = {}) {
         // 超时常常意味着"主机活着但 SSH 端口不通"或"地址变了"，而不是命令本身失败；
         // 退回一句 (no output) 会把这个区别抹掉，让人以为是插件的问题。
         detail: (result.stderr ?? '').trim() || (result.timedOut === true
-          ? `连接在 ${normalizeTimeout(timeoutMs)}ms 内未建立：主机可能在线但 SSH 端口不通，或地址已变`
+          ? t('probe.timeoutDetail', { ms: normalizeTimeout(timeoutMs) })
           : '(no output)'),
         notes: result.notes ?? [],
         exitCode: result.exitCode,
@@ -894,16 +912,19 @@ export function apply(ctx, config = {}) {
   /** `/hosts` 单台主机最多回显多少行输出，防止一条命令刷满整段对话。 */
   const HOSTS_OUTPUT_MAX_LINES = 40
   /**
-   * 两段的分节标题。
+   * 无参 `/hosts` 的探测超时，比设置页的 15 秒紧得多。
+   *
+   * 无参调用是在对话里等结果的，用户能容忍的等待只有几秒；并行探测之下总耗时约等于这个
+   * 值而不是「台数 × 超时」。探不完的主机按离线处理，重新执行即可再测一次。
+   */
+  const HOSTS_LIST_PROBE_TIMEOUT_MS = 4000
+  /**
+   * 生成一条分节标记，形如 `─── 连接状态:ok ───`。
    *
    * Client 端按这些标记把一次 `/hosts` 拆成两张卡片，并**各自**判断该亮绿还是红——
    * 「连上了没有」和「命令跑成功没有」是两个独立的事实，混用一个标志会让连通的卡片
-   * 因为命令失败而变红。
-   */
-  const PROBE_SECTION = '连接状态'
-  const EXEC_SECTION = '命令执行'
-  /**
-   * 生成一条分节标记，形如 `─── 连接状态:ok ───`。
+   * 因为命令失败而变红。段名走 `t()`，所以切换界面语言后卡片标题也跟着变。
+   *
    * @param title - 段名。
    * @param failed - 该段是否有失败。
    * @returns 标记行。
@@ -912,15 +933,20 @@ export function apply(ctx, config = {}) {
 
   /**
    * 体检全部主机并写入缓存。
+   *
+   * 各主机之间**并行**探测：`withHostLock` 是按别名的，不同主机本来就互不相干，串行只会
+   * 让总耗时变成「台数 × 超时」。真正需要串行的是同一台主机上的连接，那里由锁保证。
+   *
+   * @param timeoutMs - 单台探测超时；默认沿用设置页的宽松值。
    * @returns 是否拿到了结果。
    */
-  const refreshHealth = async () => {
+  const refreshHealth = async (timeoutMs = SETTINGS_PROBE_TIMEOUT_MS) => {
     try {
       const hosts = await vault.list()
-      for (const host of hosts) {
-        const result = await probeHost(host.alias, SETTINGS_PROBE_TIMEOUT_MS)
+      await Promise.all(hosts.map(async (host) => {
+        const result = await probeHost(host.alias, timeoutMs)
         healthCache.set(host.alias, { ok: result.ok === true, at: Date.now() })
-      }
+      }))
       const live = new Set(hosts.map((host) => host.alias))
       for (const alias of [...healthCache.keys()]) {
         if (!live.has(alias)) healthCache.delete(alias)
@@ -940,25 +966,27 @@ export function apply(ctx, config = {}) {
   // —— 对话里的 `/ssh <别名>` 快捷调用 ——
   ctx.inject(['commands'], (cmdCtx) => {
     /** 当前 `/hosts` 的注销句柄。 */
-    let disposeSshCommand
+    let disposeHostsCommand
 
     /**
-     * 注册 `/hosts`。
+     * `/hosts` 的命令定义。
      *
-     * **只注册一次，绝不重注册。** `commands.register` 的 disposer 会销毁当前定义，而用户
-     * 很可能正在输入这个命令的参数；定义一换，输入框手里的命令上下文就失效了——退格失灵、
-     * 输入状态错乱，只能重启界面恢复。
+     * 做成工厂函数是为了语言切换时能拿到新文案：`description` 与 `input.hint` 都是注册时捕获的
+     * 静态字符串（`CommandInputDescriptor` 没有 thunk 形态），要跟着界面语言走只能重新注册。
      *
-     * 代价是 `input.hint` 只能是静态文案（它没有 thunk 形态）。在线主机因此改到无参执行时
-     * 列出，而不是塞进提示里。
+     * 历史教训：早先版本按体检结果**定时**重注册，用户正输入参数时定义被换掉，输入框失去
+     * 命令上下文（退格失灵，只能重启界面）。所以这里**只在 locale 真的变化时**重注册一次——
+     * 那发生在设置页切语言的那一刻，输入框里没有进行中的命令。
+     *
+     * 代价不变：hint 里放不下在线主机的动态列表，因此无参执行时才列出来。
      *
      * 命令名用 `hosts` 而不是 `ssh`：输入框是 Lexical 编辑器，普通文本节点仍受浏览器拼写
      * 检查约束，`ssh` 会被标红，而 `hosts` 是词典里的词。
      */
-    disposeSshCommand = cmdCtx.commands.register({
+    const hostsCommandDefinition = () => ({
       name: 'hosts',
-      description: '列出已配置的 SSH 主机与在线状态，或探测指定主机、在指定主机上执行 shell 命令',
-      input: { hint: '别名,别名; shell 命令（自然语言请直接说，不要加 /hosts）' },
+      description: t('hosts.description'),
+      input: { hint: t('hosts.hint') },
       handler: async (invocation) => {
         // 格式：`/hosts 别名[,别名][; shell 命令]`。
         // 分号之前是主机选择器；分号之后**如果是 shell 命令**就在每台可达主机上执行。
@@ -967,7 +995,7 @@ export function apply(ctx, config = {}) {
         const names = segments[0].split(/[,，]/).map((part) => part.trim()).filter((part) => part.length > 0)
         // 命令里若还有分号，原样拼回去，只把第一个分号当作分隔。
         const remoteCommand = segments.slice(1).join(';').trim()
-        const usage = '用法：`/hosts 别名,别名; shell 命令` —— 逗号分隔多台（中英文都行），分号之后是要执行的命令，留空则只探测。'
+        const usage = t('hosts.usage')
         try {
           // 分号后不一定是命令。命令 handler 的产出不会回流给模型，所以这里**不能**把
           // 一句中文当 shell 命令硬跑——那只会得到一条看不懂的语法错误。识别出来就停下，
@@ -975,24 +1003,31 @@ export function apply(ctx, config = {}) {
           if (remoteCommand.length > 0 && looksLikeNaturalLanguage(remoteCommand)) {
             return {
               kind: 'success',
-              text: `「${remoteCommand}」看起来是自然语言，不是 shell 命令，我没有执行它。\n\n`
-                + '命令的运行结果不会回流给我（模型），所以这种请求不能塞进分号——把这句话直接发给对话就行，'
-                + '我会自己挑主机并执行。\n\n'
-                + `如果确实要跑命令，写成：\`/hosts ${names.length > 0 ? names.join(',') : '<别名>'}; <shell 命令>\``,
+              text: t('hosts.notNatural', {
+                text: remoteCommand,
+                alias: names.length > 0 ? names.join(',') : t('hosts.aliasPlaceholder'),
+              }),
             }
           }
           if (names.length === 0 && remoteCommand.length === 0) {
             const hosts = await vault.list()
             if (hosts.length === 0) {
-              return { kind: 'success', text: 'SSH 保险库为空。可在「设置 → SSH 连接」中添加主机。' }
+              return { kind: 'success', text: t('hosts.vaultEmpty') }
             }
             // 还没有体检结果就现测一遍；已有结果就直接用，别让无参调用白等一轮探测。
-            if (healthCache.size === 0) await refreshHealth()
+            // 这里刻意用短超时：这是对话里等结果的地方，不能让 5 台不可达主机把总耗时
+            // 拉成 75 秒——那在界面上就是「输入了回车但没有任何反应」。
+            if (healthCache.size === 0) await refreshHealth(HOSTS_LIST_PROBE_TIMEOUT_MS)
             const online = []
             const offline = []
             for (const record of hosts) {
-              const line = `${record.alias}（${maskHost(record.host)}:${record.port}，`
-                + `${maskUser(record.username)}，${record.auth?.type ?? 'agent'}）`
+              const line = t('hosts.listLine', {
+                alias: record.alias,
+                host: maskHost(record.host),
+                port: record.port,
+                user: maskUser(record.username),
+                auth: record.auth?.type ?? 'agent',
+              })
               const entry = healthCache.get(record.alias)
               if (entry !== undefined && entry.ok === true) online.push(line)
               else offline.push(line)
@@ -1000,14 +1035,14 @@ export function apply(ctx, config = {}) {
             // 状态只由标题行的圆点表达，正文保持纯文本——emoji 色点和终端卡片上的实心圆点
             // 并排出现时，前者明显更丑，也重复表达了同一件事。
             const sections = [online.length > 0
-              ? `在线 ${online.length} 台：\n${online.join('\n')}`
-              : '当前没有可达主机。']
-            if (offline.length > 0) sections.push(`离线 ${offline.length} 台：\n${offline.join('\n')}`)
+              ? `${t('hosts.onlineCount', { n: online.length })}\n${online.join('\n')}`
+              : t('hosts.noReachable')]
+            if (offline.length > 0) sections.push(`${t('hosts.offlineCount', { n: offline.length })}\n${offline.join('\n')}`)
             sections.push(usage)
             return { kind: offline.length > 0 ? 'error' : 'success', text: sections.join('\n\n') }
           }
           if (names.length === 0) {
-            return { kind: 'error', text: `分号前没有指定主机。${usage}` }
+            return { kind: 'error', text: t('hosts.needHostWithUsage', { head: t('hosts.needHost'), usage }) }
           }
 
           // 先剔掉不存在的别名，免得把「找不到」混进连接失败里。
@@ -1025,7 +1060,7 @@ export function apply(ctx, config = {}) {
             healthCache.set(alias, { ok: probe.ok === true, at: Date.now() })
             if (!probe.ok) {
               probeFailed = true
-              probeLines.push(`${alias} — ${probe.detail.split('\n')[0].trim() || '连接失败'}`)
+              probeLines.push(`${alias} — ${probe.detail.split('\n')[0].trim() || t('hosts.probeFailed')}`)
               continue
             }
             // 多行 facts 压成一行：一台机器不该把整段对话撑满。
@@ -1050,11 +1085,11 @@ export function apply(ctx, config = {}) {
             if (output.length > 0) {
               const clipped = output.split('\n').slice(0, HOSTS_OUTPUT_MAX_LINES)
               execLines.push(clipped.map((line) => `  ${line}`).join('\n'))
-              if (output.split('\n').length > HOSTS_OUTPUT_MAX_LINES) execLines.push('  …（输出已截断）')
+              if (output.split('\n').length > HOSTS_OUTPUT_MAX_LINES) execLines.push(`  ${t('hosts.outputTruncated')}`)
             }
             if (run.timedOut === true) {
               execFailed = true
-              execLines.push(`  [超时：${HOSTS_COMMAND_TIMEOUT_MS}ms 内未结束]`)
+              execLines.push(`  ${t('hosts.timeout', { ms: HOSTS_COMMAND_TIMEOUT_MS })}`)
             } else if (run.exitCode !== 0 && run.exitCode !== null) {
               execFailed = true
               execLines.push(`  [exit ${run.exitCode}]`)
@@ -1062,11 +1097,14 @@ export function apply(ctx, config = {}) {
           }
           if (unknown.length > 0) {
             probeFailed = true
-            probeLines.push(`未找到：${unknown.join('、')}（${usage}）`)
+            probeLines.push(t('hosts.unknownWithUsage', {
+              list: unknown.join(t('hosts.listSeparator')),
+              usage,
+            }))
           }
-          const sections = [`${sectionMark(PROBE_SECTION, probeFailed)}\n${probeLines.join('\n')}`]
+          const sections = [`${sectionMark(t('hosts.probeSection'), probeFailed)}\n${probeLines.join('\n')}`]
           if (execLines.length > 0) {
-            sections.push(`${sectionMark(EXEC_SECTION, execFailed)}\n${execLines.join('\n')}`)
+            sections.push(`${sectionMark(t('hosts.execSection'), execFailed)}\n${execLines.join('\n')}`)
           }
           // 整体成败仍交给 kind（会话卡片以外的通用呈现会用到），但两张卡片各自按分段标记亮灯。
           return { kind: probeFailed || execFailed ? 'error' : 'success', text: sections.join('\n\n') }
@@ -1075,6 +1113,23 @@ export function apply(ctx, config = {}) {
         }
       },
     })
+
+    /** 注册（或按当前语言重新注册）`/hosts`。 */
+    const registerHostsCommand = () => {
+      disposeHostsCommand?.()
+      disposeHostsCommand = cmdCtx.commands.register(hostsCommandDefinition())
+    }
+    registerHostsCommand()
+
+    // 语言切换后换一份定义，让 `/` 菜单里的说明与输入提示立刻跟着换语言。
+    // 命令定义的生命周期归这个 effect 管；体检定时器只管缓存，不碰命令定义。
+    cmdCtx.effect(() => {
+      const off = onLocaleChange(() => registerHostsCommand())
+      return () => {
+        off()
+        disposeHostsCommand?.()
+      }
+    }, 'ssh-vault: localized command definition')
 
     // 后台只刷新连通性缓存，不动命令定义。
     cmdCtx.effect(() => {
@@ -1090,7 +1145,6 @@ export function apply(ctx, config = {}) {
         stopped = true
         clearTimeout(warmup)
         clearInterval(timer)
-        disposeSshCommand?.()
       }
     })
   })

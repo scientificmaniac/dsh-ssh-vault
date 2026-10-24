@@ -343,6 +343,27 @@ await rm(VAULT_DIR, { recursive: true, force: true })
   check('占用失败时不破坏原记录', vault.hosts.renamed !== undefined && vault.hosts.taken?.alias === 'taken', JSON.stringify(Object.keys(vault.hosts)))
 }
 
+// —— 语言：显式英文偏好下，用户可见的错误消息必须是英文 ——
+{
+  const { applyPreference, resetLocaleForTests } = await import('../lib/i18n.js')
+  applyPreference('en')
+  const vault = memoryVault({ demo: sampleRecord })
+  const handler = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
+
+  const unknown = await invoke(handler, `${API_PREFIX}/who-knows`, {})
+  check('英文下未知操作消息为英文', String(unknown.envelope.error.message).includes('Unknown action'), JSON.stringify(unknown.envelope))
+
+  const badPort = await invoke(handler, `${API_PREFIX}/save`, {
+    alias: 'x', host: 'h', username: 'u', authType: 'password', password: 'p', port: 70000,
+  })
+  check('英文下端口校验消息为英文', String(badPort.envelope.error.message).includes('Port'), JSON.stringify(badPort.envelope))
+
+  const missing = await invoke(handler, `${API_PREFIX}/test`, { alias: 'ghost' })
+  check('英文下未知主机消息为英文', String(missing.envelope.error.message).includes('No host named'), JSON.stringify(missing.envelope))
+
+  resetLocaleForTests()
+}
+
 console.log(`${passed} 项通过，${failures.length} 项失败`)
 for (const failure of failures) console.error(`FAIL: ${failure}`)
 if (failures.length > 0) process.exit(1)

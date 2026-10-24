@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-1.13.0-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-160%20cases-brightgreen.svg)](test)
+[![Version](https://img.shields.io/badge/version-1.15.0-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-279%20cases-brightgreen.svg)](test)
 
 SSH for DeepSeek Harness agents: host address, port, account, password and private key live in an encrypted vault, and the conversation only ever uses an alias. The model never sees a password, and a password never reaches a command line or a remote process list.
 
@@ -93,6 +93,14 @@ Settings → SSH Connections provides:
 - "Open in file manager" for the vault directory
 - Password and private-key authentication; a key can be uploaded whole and is written into the vault with its permissions tightened
 
+### Language
+
+Everything the plugin shows follows the language chosen in **Settings → General → Language**; there is no separate switch here.
+
+- The settings page and the in-conversation SSH cards get their copy from the host's locale service, so they change the moment the language does.
+- `/hosts` output, transport diagnostics, Settings-API errors, vault errors and background-job status are generated on the Host; they read the same persisted preference (`locale.preference`) and follow later changes, falling back to the request's `Accept-Language` only when nothing was ever chosen.
+- **Model-facing definitions stay English**: tool names, descriptions and parameter schemas belong to the model interface, not to the UI.
+
 ### The `/hosts` command
 
 Start a line with `/` in the composer and the command runs **without going through the model**.
@@ -108,6 +116,9 @@ Start a line with `/` in the composer and the command runs **without going throu
 - Separators accept both ASCII and full-width forms: `,` and `，`, `;` and `；`
 - If the text after the semicolon reads as natural language (e.g. "check the disk"), the command **does not run it** and tells you to send that sentence to the conversation instead — command output never reaches the model, so such requests cannot go through the command
 - Output renders as **two cards**: reachability and command execution, each with its own state dot
+- **Picking `/hosts` from the `/` menu only claims it**: the composer shows the command token with its hint. Press Enter again to run it bare (list hosts), or type `alias; shell command` as its arguments. To go back to a normal prompt instead, delete the command token — until then, whatever you type is the command's argument
+- **Before the first message the result appears above the composer.** DSH treats a transcript containing only command rows as an inactive view, so a bare `/hosts` in a brand-new conversation used to look like "nothing happened" until you sent a message. The plugin now mirrors the `/hosts` cards (running state included) in the composer dock while the session is still blank; once the first message exists the transcript takes over, so nothing is duplicated
+- A bare call probes only when the health cache is cold, in parallel and with a 4s budget, so it answers within seconds even when several hosts are unreachable
 
 ## Architecture
 
@@ -204,13 +215,15 @@ The three terminal-style tools also register `presentCall` / `presentResult` hoo
 
 The `tool.call.toolview` key space is open; none of these three names were taken, so no built-in UI is shadowed.
 
+All three registrations also carry `locale: 'ssh-vault'` — the namespace registered with the host's locale service — which is what makes the rendered cards re-render and re-read their copy when the language changes.
+
 ### Human command (`ctx.commands.register`)
 
 | Command | Notes |
 | --- | --- |
 | `/hosts` | Probe hosts / run a command on them. Form: `alias[,alias][; shell command]` |
 
-The command is **registered once and never re-registered**. The disposer returned by `commands.register` destroys the current definition; re-registering while the user is typing arguments strips the composer of its command context (backspace stops working, and the UI needs a restart).
+The command's `description` and `input.hint` are **re-registered only when the interface language changes**. The disposer returned by `commands.register` destroys the current definition, so replacing it while the user is typing arguments strips the composer of its command context (backspace stops working, and the UI needs a restart). That is why registration is never driven by timers or health results; a locale switch is a deliberate Settings action with nothing being typed, making it the one safe moment to swap the definition.
 
 ### HTTP routes (`ctx.webServer.register`)
 
@@ -237,17 +250,19 @@ Mounted at `/ssh-vault` (`kind: 'prefix'`, **no trailing slash**). `POST` only, 
 
 1. The Loader reads `cordis.patch.yml` and inserts the entry with `id: ssh-vault`
 2. The host `import`s `index.js` and calls `apply(ctx, config)`
-3. `apply` opens the vault, registers the four tools, and — where the services exist — the web routes, the `/hosts` command and the background health timer
-4. The Client half is injected into the page per the `dsh.client` declaration, and its `apply` registers the three slots
+3. `apply` opens the vault, registers the four tools, and — where the services exist — the web routes, the `/hosts` command and the background health timer. It also subscribes to the host settings document so it can read the interface language and follow later switches
+4. The Client half is injected into the page per the `dsh.client` declaration, and its `apply` registers the three slots and its `ssh-vault` dictionary with the locale service
 
 ### Unload and resource reclamation
 
 Async resources are wrapped in `ctx.effect`, and Cordis runs the returned cleanups in reverse order on teardown:
 
-- Tool and command disposers
+- Tool and command disposers (including the locale-switched command definition)
 - Web route disposers
+- The settings-document subscription and its startup retry timers
 - The health sweep's `setTimeout` / `setInterval`
 - The vault handle
+- The client's locale dictionary and slot registrations
 
 Vault data **survives uninstall** and is available again after reinstall.
 
@@ -305,6 +320,9 @@ lockout policy. `ssh_run` warns before commands that change account state.
 
 - The **navigation icon next to "SSH Connections" is drawn by the host from the section id**. The `settings.section` registration accepts only `id` / `order` / `label`, so a plugin cannot supply its own icon
 - Command arguments have **no candidate-list mechanism** (`CommandInputDescriptor` carries only `hint` and `attachments`), so `/hosts` cannot offer alias completion
+- A command with an `input` hint is **claimed, not executed**, when picked from the `/` menu: this is DSH behaviour and the plugin cannot bypass it. The hint (localized) explains that a second Enter runs the command bare
+- **DSH does not treat a transcript made only of command rows as an active view.** `/hosts` compensates with the composer-dock mirror described above; the built-in rule still applies to other plugins' commands
+- The **interface language is read from the shared host settings**, so with several browsers attached to one host the most recently written preference wins; DSH Desktop is a single-user surface, where this is the intended behaviour
 
 ### Open questions
 
@@ -366,6 +384,9 @@ Three common causes: a `.pub` public key was chosen, a PuTTY `.ppk` was chosen (
 
 **Output from several hosts runs together.**
 Use the `/hosts host; command` form; the output splits into a reachability card and a command card.
+
+**I switched DSH to English but some plugin text is still Chinese.**
+From 1.15.0 the whole surface follows the DSH language. After upgrading, reload the page once (client half) and restart DSH once (host half) to load the new code; after that, switching the language in Settings applies immediately, no reload needed. Model-facing tool definitions stay English by design.
 
 **Client code changed but the interface did not.**
 Reload the page. Host-side changes need a DSH restart.

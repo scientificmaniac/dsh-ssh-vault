@@ -3,6 +3,8 @@
  *
  * 与 Host 侧一样保持零依赖、零构建——这里手写 React 元素，只 require 宿主提供的 'react'。
  * 数据经同源、document-relative 的 POST 走 `/ssh-vault/*`（见 lib/vault-api.js）。
+ * 文案交给宿主的 locale 服务：注册 `ssh-vault` 命名空间的中英字典，slot 组件用宿主注入的 t，
+ * 所以 DSH 里切换语言后设置页与对话内卡片会立刻跟着变；没有 locale 服务的老宿主退回按 <html lang> 判断。
  *
  * 安全性上值得注意的一点：口令通过 HTTP body 提交，**不进入会话日志**，
  * 这比让模型调用 `ssh_hosts add password=...` 更干净。
@@ -12,9 +14,9 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useCallback, useEffect, useState } = React
+    const { useCallback, useContext, useEffect, useRef, useState } = React
 
-    // —— 文案：按浏览器语言在中英之间选择，避免为一个设置页引入完整的 i18n 依赖 ——
+    // —— 文案：全部经宿主的 locale 服务提供，这里只维护中英两份字典 ——
     const DICT = {
       zh: {
         sectionTitle: 'SSH 连接',
@@ -79,6 +81,11 @@ window.__ModuleLoader__.load({
         agentBadge: 'agent',
         bindAddress: '出口源地址（可选）',
         updatedAt: '更新于',
+        running: '执行中…',
+        noOutput: '（无输出）',
+        anyFailed: '有失败',
+        shellLabel: 'shell',
+        dockHint: '命令输出：发送第一条消息后并入对话记录',
       },
       en: {
         sectionTitle: 'SSH Connections',
@@ -143,10 +150,47 @@ window.__ModuleLoader__.load({
         agentBadge: 'agent',
         bindAddress: 'Source address (optional)',
         updatedAt: 'updated',
+        running: 'Running…',
+        noOutput: 'No output',
+        anyFailed: 'Failed',
+        shellLabel: 'shell',
+        dockHint: 'Command output: it moves into the transcript after your first message',
       },
     }
-    const LANG = String((typeof navigator !== 'undefined' && navigator.language) || 'zh').toLowerCase().startsWith('zh') ? 'zh' : 'en'
-    const t = (key) => DICT[LANG][key] ?? DICT.zh[key] ?? key
+    // —— 界面语言：交给宿主的 locale 服务 ——
+    //
+    // DSH 的客户端 locale 服务（`ctx.get('locale')`）提供 register(ns, { zh, en }) 注册字典、
+    // bind(ns) 取 t(key, vars)；slot 注册时带 `locale: ns`，宿主就会把 t 作为 prop 传给组件，
+    // 并在语言切换时换掉 t 的引用、按 revision 重新渲染该组件。
+    // 老宿主没有这个服务，所以下面保留了 fallbackT：只在这种情况下按 <html lang> 猜中英。
+    const NS = 'ssh-vault'
+    const LocaleContext = React.createContext(null)
+
+    /**
+     * 兜底取词：没有 locale 服务（或组件不在 withLocale 内）时使用。
+     * @param key - 字典键。
+     * @returns 文案；两种语言都缺该键时返回键名本身。
+     */
+    const fallbackT = (key) => {
+      const lang = String(globalThis.document?.documentElement?.lang ?? '').toLowerCase().startsWith('zh') ? 'zh' : 'en'
+      return DICT[lang]?.[key] ?? DICT.zh[key] ?? key
+    }
+
+    /** 组件内取 t：优先用 withLocale 注入的那个；语言切换后它的引用会变，从而触发重渲染。 */
+    const useT = () => useContext(LocaleContext) ?? fallbackT
+
+    /**
+     * 把要注册的 slot 组件包一层：宿主传进来的 t（注册选项带 `locale` 时才有）放进 context，
+     * 老宿主没传就退回 fallbackT。
+     * @param Component - 被注册的组件。
+     * @returns 包了 LocaleContext.Provider 的组件。
+     */
+    function withLocale(Component) {
+      return function LocaleRoot(props) {
+        const t = props.t ?? fallbackT
+        return h(LocaleContext.Provider, { value: t }, h(Component, props))
+      }
+    }
 
     // —— 配色：照搬宿主 primitives 的真实定义 ——
     //
@@ -250,9 +294,10 @@ window.__ModuleLoader__.load({
     /**
      * 连通状态点的悬停说明。
      * @param entry - 该主机的体检结果，未检测时为 undefined。
+     * @param t - 当前语言的取词函数。
      * @returns 说明文本。
      */
-    function healthTitle(entry) {
+    function healthTitle(entry, t) {
       if (entry === undefined) return t('healthIdle')
       if (entry.status === 'checking') return t('testing')
       const head = entry.status === 'ok' ? t('testOk') : t('testFail')
@@ -276,9 +321,10 @@ window.__ModuleLoader__.load({
      * 调一次宿主路由。
      * @param action - 路由末段。
      * @param payload - JSON 请求体。
+     * @param t - 当前语言的取词函数，用于本地生成的错误文案。
      * @returns `{ ok: true, value }` 或 `{ ok: false, error }`。
      */
-    async function call(action, payload) {
+    async function call(action, payload, t = fallbackT) {
       let response
       try {
         // document-relative：页面用 <base href="./">，绝对路径会逃出部署前缀。
@@ -327,9 +373,10 @@ window.__ModuleLoader__.load({
      * 内容检查既拦得住无关文件，也不会误伤它们。
      *
      * @param file - 用户选中的文件。
+     * @param t - 当前语言的取词函数。
      * @returns 问题描述；看起来是私钥时返回 `null`。
      */
-    async function inspectKeyFile(file) {
+    async function inspectKeyFile(file, t = fallbackT) {
       if (file.size > 64 * 1024) return t('keyTooLarge')
       let text
       try {
@@ -352,8 +399,13 @@ window.__ModuleLoader__.load({
         props.hint ? h('span', { style: S.hint }, props.hint) : null)
     }
 
-    /** 认证方式徽章。 */
-    function authBadges(host) {
+    /**
+     * 认证方式徽章。
+     * @param host - 列表里的一条主机记录。
+     * @param t - 当前语言的取词函数。
+     * @returns 徽章文字数组。
+     */
+    function authBadges(host, t) {
       const badges = []
       if (host.authType === 'key') badges.push(t('keyBadge'))
       else if (host.hasPassword) badges.push(t('passwordBadge'))
@@ -365,6 +417,7 @@ window.__ModuleLoader__.load({
 
     /** 新增／编辑表单。 */
     function HostForm(props) {
+      const t = useT()
       const existing = props.record
       const [alias, setAlias] = useState(existing ? existing.alias : '')
       const [host, setHost] = useState('')
@@ -387,6 +440,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!existing) return
         let alive = true
+        // reveal 的失败结果本来就不展示，取词函数用默认值即可，免得语言切换触发重复请求。
         call('reveal', { alias: existing.alias }).then((result) => {
           if (!alive || !result.ok) return
           setHost(result.value.host ?? '')
@@ -434,7 +488,7 @@ window.__ModuleLoader__.load({
             }
           }
         }
-        const result = await call('save', payload)
+        const result = await call('save', payload, t)
         setBusy(false)
         if (!result.ok) {
           setError(result.error)
@@ -485,7 +539,7 @@ window.__ModuleLoader__.load({
                       setKeyFile(null)
                       return
                     }
-                    const problem = await inspectKeyFile(picked)
+                    const problem = await inspectKeyFile(picked, t)
                     if (problem !== null) {
                       // 选错就地拒绝并清空，免得把无关文件传上去再被 Host 退回来。
                       setKeyFile(null)
@@ -523,6 +577,11 @@ window.__ModuleLoader__.load({
 
     /** 设置页主体。 */
     function SshVaultSettings() {
+      const t = useT()
+      // t 会随语言切换换引用；两个 useCallback 用 ref 取最新 t，保持依赖稳定——
+      // 否则切一次语言就会重新拉列表、重测所有主机（串行 SSH，代价很高）。
+      const tRef = useRef(t)
+      tRef.current = t
       const [state, setState] = useState({ status: 'loading', hosts: [], error: '', keyMode: '', vaultDir: '', version: '' })
       const [form, setForm] = useState(null)
       const [tests, setTests] = useState({})
@@ -532,7 +591,7 @@ window.__ModuleLoader__.load({
       const [health, setHealth] = useState({})
 
       const load = useCallback(async () => {
-        const result = await call('list')
+        const result = await call('list', undefined, tRef.current)
         if (result.ok) {
           setState({
             status: 'ready',
@@ -556,7 +615,7 @@ window.__ModuleLoader__.load({
        */
       const measureHost = useCallback(async (alias) => {
         setHealth((map) => ({ ...map, [alias]: { status: 'checking' } }))
-        const result = await call('test', { alias })
+        const result = await call('test', { alias }, tRef.current)
         const ok = result.ok === true && result.value.ok === true
         const detail = result.ok === true ? result.value.detail : result.error
         const notes = result.ok === true ? (result.value.notes ?? []) : []
@@ -595,7 +654,7 @@ window.__ModuleLoader__.load({
       const removeHost = async (alias) => {
         if (typeof window !== 'undefined' && typeof window.confirm === 'function'
           && !window.confirm(t('confirmRemove').replace('{alias}', alias))) return
-        const result = await call('remove', { alias })
+        const result = await call('remove', { alias }, t)
         if (!result.ok) {
           setState((s) => ({ ...s, error: result.error }))
           return
@@ -615,7 +674,7 @@ window.__ModuleLoader__.load({
 
       const openVault = async () => {
         setOpenState({ status: 'working', detail: '' })
-        const result = await call('openVault')
+        const result = await call('openVault', undefined, t)
         setOpenState(result.ok ? { status: 'ok', detail: '' } : { status: 'fail', detail: result.error })
       }
 
@@ -684,15 +743,15 @@ window.__ModuleLoader__.load({
                         ...S.dot,
                         ...HEALTH_DOT[health[host.alias] === undefined ? 'idle' : health[host.alias].status],
                       },
-                      title: healthTitle(health[host.alias]),
+                      title: healthTitle(health[host.alias], t),
                     }),
                     h('span', { style: S.alias }, host.alias),
-                    ...authBadges(host).map((badge, index) => h('span', { key: index, style: S.badge }, badge)),
+                    ...authBadges(host, t).map((badge, index) => h('span', { key: index, style: S.badge }, badge)),
                     host.updatedAt ? h('span', { style: { ...S.badge, borderColor: 'transparent' } }, `${t('updatedAt')} ${String(host.updatedAt).slice(0, 19).replace('T', ' ')}`) : null),
                   h('div', { style: S.kv },
                     h('span', null, `${host.host}:${host.port}`),
                     h('span', null, host.username),
-                    h('span', null, 'shell'),
+                    h('span', null, t('shellLabel')),
                     h('span', null, host.shell),
                     ...(host.description ? [h('span', null, t('description')), h('span', null, host.description)] : []),
                     ...(host.tags.length > 0 ? [h('span', null, t('tags')), h('span', null, host.tags.join(', '))] : [])),
@@ -842,6 +901,7 @@ window.__ModuleLoader__.load({
      * @returns 终端视图。
      */
     function SshTerminalRow(props) {
+      const t = useT()
       const call = sshCallOf(props?.block)
       if (call === null) return null
       const running = !call.settled
@@ -863,7 +923,7 @@ window.__ModuleLoader__.load({
           badge !== null ? h('span', { style: T.statusBadge }, badge) : null),
         body.length > 0
           ? h('pre', { style: T.pre }, body)
-          : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))
+          : h('div', { style: T.empty }, running ? t('running') : t('noOutput')))
     }
 
     /** 与 Host 侧约定的分节标记：`─── 连接状态:ok ───` / `─── 命令执行:fail ───`。 */
@@ -902,6 +962,7 @@ window.__ModuleLoader__.load({
      * @returns 终端视图。
      */
     function HostsCommandRow(props) {
+      const t = useT()
       const node = props?.node
       const outcome = node?.outcome
       const running = outcome === null || outcome === undefined
@@ -916,7 +977,7 @@ window.__ModuleLoader__.load({
             h('span', { style: T.headText }, `/${name}`)),
           text.length > 0
             ? h('pre', { style: T.pre }, text)
-            : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))
+            : h('div', { style: T.empty }, running ? t('running') : t('noOutput')))
       }
       return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
         ...sections.map((section, index) => h('div', { key: index, style: T.card },
@@ -928,32 +989,145 @@ window.__ModuleLoader__.load({
             }),
             h('span', { style: T.headText }, index === 0 ? `/${name}` : section.title),
             index === 0 ? h('span', { style: T.badgeCentered }, section.title) : null,
-            section.failed ? h('span', { style: T.statusBadge }, '有失败') : null),
+            section.failed ? h('span', { style: T.statusBadge }, t('anyFailed')) : null),
           section.body.length > 0
             ? h('pre', { style: T.pre }, section.body)
-            : h('div', { style: T.empty }, running ? '执行中…' : '（无输出）'))))
+            : h('div', { style: T.empty }, running ? t('running') : t('noOutput')))))
+    }
+
+    /**
+     * 从宿主 Chat 目标快照里取出 `/hosts` 的命令节点。
+     *
+     * DSH 的 Chat 视图有一个约定：**整段记录只有命令节点时它不算「活跃视图」**
+     * （`chatViewDefinition.isActive` 要求至少有一个非 command 节点）。于是新建会话里
+     * 先跑 `/hosts` 的结果既不在对话区显示，也不会自动展开——用户看起来就是「回车没反应」，
+     * 直到发出第一条消息，命令卡片才作为历史出现在顶部。
+     *
+     * 这个函数把那些命令节点找出来，交给下面的 dock 面板在「首条消息之前」代为显示。
+     *
+     * @param snapshot - Chat 目标快照 `{ order, nodes }`；尚未激活时为 undefined。
+     * @returns `/hosts` 的命令数据数组（按时间顺序）；快照不可读时为 null。
+     */
+    function hostsCommandNodesOf(snapshot) {
+      if (snapshot === undefined || snapshot === null || !Array.isArray(snapshot.order)) return null
+      const nodes = snapshot.nodes
+      if (nodes === undefined || typeof nodes.get !== 'function') return null
+      const commands = []
+      for (const key of snapshot.order) {
+        const node = nodes.get(key)
+        if (node?.kind === 'command' && node.data?.name === 'hosts') commands.push(node.data)
+      }
+      return commands
+    }
+
+    /**
+     * Chat 视图是否已经有非命令内容。
+     * @param snapshot - Chat 目标快照。
+     * @returns 有普通消息（对话区会自己渲染）时为 true。
+     */
+    function chatHasTranscript(snapshot) {
+      if (snapshot === undefined || snapshot === null || !Array.isArray(snapshot.order)) return false
+      const nodes = snapshot.nodes
+      if (nodes === undefined || typeof nodes.get !== 'function') return false
+      return snapshot.order.some((key) => nodes.get(key)?.kind !== 'command')
+    }
+
+    /**
+     * 首条消息之前的 `/hosts` 结果面板。
+     *
+     * 宿主只会在「有非命令节点」时才把 Chat 视图当作活跃视图，所以新会话里单独跑 `/hosts`
+     * 的结果默认不可见。这里把这些命令节点渲染在输入框上方的 dock 里：运行中立刻能看到
+     * 「执行中…」，结果出来就地显示；一旦发出第一条消息，对话区接管，本面板返回 null，
+     * 不会重复显示。
+     *
+     * @param props - 注入的两个 hook 与 locale 的 t。
+     * @returns dock 卡片，或 null（不该显示时）。
+     */
+    function HostsResultDock(props) {
+      const t = useT()
+      const session = props.useSshHostsSession((snapshot) => snapshot)
+      const chat = props.useSshHostsChat((snapshot) => snapshot)
+      const commands = hostsCommandNodesOf(chat)
+      if (session?.blank !== true || chatHasTranscript(chat) || commands === null || commands.length === 0) return null
+      return h('div', {
+        style: { display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '38vh', overflowY: 'auto' },
+        'data-ssh-vault-hosts-dock': '',
+      },
+      h('div', { style: { color: C.textDim, fontSize: '11px' } }, t('dockHint')),
+      ...commands.map((command, index) => h(HostsCommandRow, {
+        key: `hosts-${command.commandId ?? command.seq ?? index}`,
+        node: command,
+      })))
     }
 
     return {
+      // locale 是可选的：这里只声明 slots，locale 用 ctx.get('locale') 做可选查找，
+      // 没有它的老宿主照样能加载（文案退回 fallbackT）。
       inject: ['slots'],
       apply(ctx) {
+        const locale = ctx.get('locale')
+        if (locale !== undefined) {
+          // 字典随插件卸载一并撤销；语言切换时宿主按 revision 重渲染带 locale 的 slot。
+          ctx.effect(() => locale.register(NS, { zh: DICT.zh, en: DICT.en }), 'ssh-vault: dictionaries')
+        }
+        const loc = locale === undefined ? {} : { locale: NS }
+        // 设置导航项的文字在宿主列表快照里求值，locale revision 变化时会被重新调用。
+        const label = () => (locale === undefined ? fallbackT('sectionTitle') : locale.bind(NS)('sectionTitle'))
         ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',
           id: 'ssh-vault',
           order: 20,
-          label: () => t('sectionTitle'),
-        }, SshVaultSettings))
+          label,
+          ...loc,
+        }, withLocale(SshVaultSettings)))
         // SSH 工具的对话内终端：按工具名分发，只占我们自己的三个名字。
         ctx.slots.inject('tool.call.toolview', function* () {
           for (const key of ['ssh_run', 'ssh_probe', 'ssh_transfer']) {
-            yield ctx.slots.register({ name: 'tool.call.toolview', key }, SshTerminalRow)
+            yield ctx.slots.register({ name: 'tool.call.toolview', key, ...loc }, withLocale(SshTerminalRow))
           }
         })
         // `/hosts` 命令自己的行：让它的输出也呈终端样式，而不是通用的折叠 <pre>。
         ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
           name: 'conversation.chat.commandview',
           key: 'hosts',
-        }, HostsCommandRow))
+          ...loc,
+        }, withLocale(HostsCommandRow)))
+
+        // 新会话里「只有命令、还没有任何消息」时，宿主不把 Chat 视图当活跃视图，
+        // `/hosts` 结果因此不可见。把它渲染到输入框上方的 dock 里补上这个空档。
+        // sessions / uiConversation 用 ctx.inject 等它们就绪（它们可能比本插件晚加载）；
+        // 老宿主没有这两个服务时回调永不触发，插件其余部分照常工作。
+        const EMPTY_SOURCE = { getSnapshot: () => undefined, subscribe: () => () => {} }
+        ctx.inject(['sessions', 'uiConversation'], (dockCtx) => {
+          const sessions = dockCtx.sessions
+          const uiConversation = dockCtx.uiConversation
+          dockCtx.slots.inject('conversation.input.dock', () => dockCtx.slots.register({
+            name: 'conversation.input.dock',
+            id: 'ssh-vault-hosts-result',
+            order: 5,
+            ...loc,
+            inject: (sessionId) => {
+              let sessionSource = EMPTY_SOURCE
+              let chatSource = EMPTY_SOURCE
+              try {
+                const binding = sessions.binding(sessionId)
+                if (binding !== undefined) {
+                  sessionSource = binding.session
+                  // Chat 目标快照在第一次订阅时才会激活；绑定失败就退回空源，面板不显示。
+                  chatSource = uiConversation.binding(binding).target('chat') ?? EMPTY_SOURCE
+                }
+              } catch {
+                // 会话正在销毁等边界情况：让面板安静地不显示，不把异常抛给渲染器。
+              }
+              return {
+                hooks: {
+                  sshHostsSession: sessionSource,
+                  sshHostsChat: chatSource,
+                },
+              }
+            },
+          }, withLocale(HostsResultDock)))
+        })
       },
     }
   },

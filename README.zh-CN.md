@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-1.13.0-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-160%20cases-brightgreen.svg)](test)
+[![Version](https://img.shields.io/badge/version-1.15.0-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-279%20cases-brightgreen.svg)](test)
 
 给 DeepSeek Harness 的智能体提供 SSH 能力：主机地址、端口、账号、口令与私钥都存进加密保险库，对话里只用别名。模型永远看不到口令，口令也不会出现在命令行或远端进程列表里。
 
@@ -93,6 +93,14 @@ dsh plugin --profile desktop list
 - 「用资源管理器打开」保险库目录
 - 口令认证与私钥认证；私钥可整份上传，由宿主写入保险库并收紧权限
 
+### 界面语言
+
+插件显示的所有文字都跟随 **设置 → 常规 → 语言**，这里没有另一套开关。
+
+- 设置页与对话内的 SSH 卡片从宿主的 locale 服务取词，语言一换立刻跟着变。
+- `/hosts` 输出、连接诊断、设置接口错误、保险库错误与后台任务状态都由 Host 生成；它们读取同一个持久偏好（`locale.preference`）并跟随之后的切换，只有在从未选择过语言时才退回请求的 `Accept-Language`。
+- **面向模型的定义保持英文**：工具名、描述与参数 schema 属于模型接口，而不是界面。
+
 ### `/hosts` 命令
 
 在输入框里以 `/` 开头，命令**不经模型**直接执行。
@@ -108,6 +116,9 @@ dsh plugin --profile desktop list
 - 分隔符支持中英文：`,` 与 `，`、`;` 与 `；`
 - 分号后如果写的是自然语言（例如「帮我看看磁盘」），命令**不会执行**，会提示你直接把它发给对话——命令的产出不回流给模型，这类请求不能走命令
 - 输出渲染为**两张卡片**：连接状态、命令执行，各自独立亮灯
+- **在 `/` 菜单里选中 `/hosts` 只是「认领」这个命令**：输入框里出现命令 token 与提示。再按一次回车＝无参执行（列出主机）；或者接着输入 `别名; shell 命令` 作为它的参数。想回到普通提示词，删掉这个命令 token 即可——在那之前输入的内容都会被当作命令参数
+- **首条消息之前，结果显示在输入框上方。** DSH 把「整段记录只有命令行」的会话视为非活跃视图，所以全新会话里单独跑 `/hosts` 以前看起来像「什么都没发生」，要等发出第一条消息才看到卡片。插件现在会在会话仍空白时把这些 `/hosts` 卡片（含运行中状态）镜像到输入框上方的 dock；首条消息发出后由对话区接管，不会重复显示
+- 无参执行只在体检缓存为空时现测，且并行、总预算 4 秒；即使多台主机不可达也能在几秒内给出结果
 
 ## 架构
 
@@ -204,13 +215,15 @@ flowchart TB
 
 `tool.call.toolview` 的 key 域开放，这三个名字原本未被占用，因此不覆盖任何内置 UI。
 
+三个注册都带 `locale: 'ssh-vault'`——也就是向宿主 locale 服务注册的命名空间——语言切换时卡片才会重新渲染、重新取词。
+
 ### 人类命令（`ctx.commands.register`）
 
 | 命令 | 说明 |
 | --- | --- |
 | `/hosts` | 探测主机 / 在主机上执行命令。格式 `别名[,别名][; shell 命令]` |
 
-命令**只注册一次，不重注册**。`commands.register` 的 disposer 会销毁当前定义；若在用户输入该命令参数期间重注册，输入框会失去命令上下文（退格失灵，需重启界面）。
+命令的 `description` 与 `input.hint` **只在界面语言切换时重新注册**。`commands.register` 返回的 disposer 会销毁当前定义；在用户输入参数期间替换定义，输入框会失去命令上下文（退格失灵，需重启界面）。所以注册绝不由定时器或体检结果驱动；切语言是设置页里的主动操作、当时没有正在输入的命令，是唯一安全的替换时机。
 
 ### HTTP 路由（`ctx.webServer.register`）
 
@@ -237,17 +250,19 @@ flowchart TB
 
 1. Loader 读 `cordis.patch.yml`，以 `id: ssh-vault` 插入插件条目
 2. 宿主 `import` `index.js`，调用 `apply(ctx, config)`
-3. `apply` 内完成：打开保险库、注册四个工具、（服务可用时）注册 Web 路由与 `/hosts` 命令、启动后台体检定时器
-4. Client 半边由宿主按 `dsh.client` 声明注入页面，`apply` 里注册三个槽位
+3. `apply` 内完成：打开保险库、注册四个工具、（服务可用时）注册 Web 路由与 `/hosts` 命令、启动后台体检定时器；同时订阅 Host 设置文档，用于读取界面语言并跟随之后的切换
+4. Client 半边由宿主按 `dsh.client` 声明注入页面，`apply` 里注册三个槽位，并向 locale 服务注册 `ssh-vault` 字典
 
 ### 卸载与资源回收
 
 异步资源都包在 `ctx.effect` 里，Cordis 在销毁时逆序调用返回的清理函数：
 
-- 工具与命令的 disposer
+- 工具与命令的 disposer（含切语言后的新命令定义）
 - Web 路由的 disposer
+- 设置文档订阅与启动重试定时器
 - 后台体检的 `setTimeout` / `setInterval`
 - 保险库句柄
+- Client 的 locale 字典与槽位注册
 
 保险库数据**不会因卸载而删除**，重新安装后仍可用。
 
@@ -302,6 +317,9 @@ Windows OpenSSH 对**已锁定**的账户是直接断开连接，而不是回 `P
 
 - 设置面板里「SSH 连接」的**导航图标由宿主按 section id 绘制**。注册接口（`settings.section`）只接受 `id` / `order` / `label`，插件无法自定义图标
 - 命令参数**没有候选列表机制**（`CommandInputDescriptor` 只有 `hint` 和 `attachments`），因此 `/hosts` 无法弹出主机名补全
+- 带 `input` 提示的命令从 `/` 菜单里选中时是**被认领而不是立即执行**：这是 DSH 的行为，插件绕不过去。提示（已双语）会写明再按一次回车即无参执行
+- **DSH 不会把「只有命令行」的记录当作活跃视图。** `/hosts` 用上面说的输入框上方 dock 镜像补上了这个空档；这条内置规则对其余插件的命令依然成立
+- **界面语言读自共享的 Host 设置**，因此同一 Host 接了多个浏览器时，最后写入的偏好生效；DSH Desktop 是单用户界面，这正是预期行为
 
 ### 待确认问题
 
@@ -363,6 +381,9 @@ Host 侧代码已更新但进程没重启。重启 DSH。
 
 **多台主机的命令输出混在一起看不清？**
 用 `/hosts kali; 命令` 的形式，输出会分成「连接状态」和「命令执行」两张卡片。
+
+**DSH 切成英文了，插件里还有中文？**
+从 1.15.0 起所有界面文字都跟随 DSH 语言。升级后需要刷新一次页面（Client 半边）并重启一次 DSH（Host 半边）以加载新代码；之后在设置里切语言立即生效，不用再刷新。面向模型的工具定义按设计保持英文。
 
 **改了客户端代码但界面没变？**
 刷新页面。改了 Host 代码则需重启 DSH。
