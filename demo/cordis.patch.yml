@@ -1,0 +1,4 @@
+- insert:
+    - id: ssh-vault-demo
+      name: 'dsh-ssh-vault-demo'
+      config: {}
