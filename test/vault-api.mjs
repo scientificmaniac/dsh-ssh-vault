@@ -27,12 +27,13 @@ function check(name, condition, detail) {
   failures.push(`${name}${detail === undefined ? '' : ` — ${detail}`}`)
 }
 
-/** 最小的请求替身：异步可迭代，提供 method/url/destroy。 */
-function fakeRequest(url, body, method = 'POST') {
+/** 最小的请求替身：异步可迭代，提供 method/url/destroy/headers。 */
+function fakeRequest(url, body, method = 'POST', headers = {}) {
   const payload = Buffer.from(body === undefined ? '{}' : JSON.stringify(body), 'utf8')
   return {
     method,
     url,
+    headers,
     async *[Symbol.asyncIterator]() {
       yield payload
     },
@@ -95,16 +96,16 @@ const sampleRecord = {
 }
 
 /** 跑一次请求并解析 envelope。 */
-async function invoke(handler, url, body, method) {
+async function invoke(handler, url, body, method, headers) {
   const res = fakeResponse()
-  await handler(fakeRequest(url, body, method), res)
+  await handler(fakeRequest(url, body, method, headers), res)
   let parsed
   try {
     parsed = JSON.parse(res.body)
   } catch {
     parsed = undefined
   }
-  return { status: res.statusCode, envelope: parsed, raw: res.body }
+  return { status: res.statusCode, envelope: parsed, raw: res.body, headers: res.headers }
 }
 
 // —— list：脱敏且永不返回口令 ——
@@ -362,6 +363,43 @@ await rm(VAULT_DIR, { recursive: true, force: true })
   check('英文下未知主机消息为英文', String(missing.envelope.error.message).includes('No host named'), JSON.stringify(missing.envelope))
 
   resetLocaleForTests()
+}
+
+// —— 信任栅栏：所有动作先过 requestRejection，未认证请求不接触保险库 ——
+{
+  const vault = memoryVault({ demo: sampleRecord })
+  const rejections = []
+  const handler = createVaultApi({
+    vault,
+    vaultDir: VAULT_DIR,
+    probe: async () => ({ ok: true, detail: '', notes: [] }),
+    requestRejection: (req) => {
+      rejections.push(req.headers?.['x-test-reject'])
+      const value = req.headers?.['x-test-reject']
+      return value === '401' ? 401 : value === '403' ? 403 : undefined
+    },
+  })
+
+  const unauthorized = await invoke(handler, `${API_PREFIX}/save`, {
+    alias: 'x', host: 'h', username: 'u', authType: 'password', password: 'p',
+  }, 'POST', { 'x-test-reject': '401' })
+  check('401 请求被拒绝', unauthorized.status === 401, String(unauthorized.status))
+  check('401 响应是纯文本且 no-store', unauthorized.headers?.['cache-control'] === 'no-store' && unauthorized.raw === 'unauthorized', JSON.stringify(unauthorized))
+  check('401 请求没有写入保险库', Object.keys(vault.hosts).length === 1, JSON.stringify(Object.keys(vault.hosts)))
+
+  const forbidden = await invoke(handler, `${API_PREFIX}/list`, {}, 'POST', { 'x-test-reject': '403' })
+  check('403 请求被拒绝', forbidden.status === 403, String(forbidden.status))
+  check('403 响应体为 forbidden', forbidden.raw === 'forbidden', forbidden.raw)
+
+  // 顺序：信任栅栏必须先于方法检查/body 解析，否则未认证方仍能探测路由行为。
+  const getRejected = await invoke(handler, `${API_PREFIX}/list`, undefined, 'GET', { 'x-test-reject': '401' })
+  check('拒绝先于方法检查（GET 返回 401 而不是 405）', getRejected.status === 401, String(getRejected.status))
+  const malformedRejected = await invoke(handler, `${API_PREFIX}/save`, undefined, 'POST', { 'x-test-reject': '403' })
+  check('拒绝先于 body 解析', malformedRejected.status === 403, String(malformedRejected.status))
+
+  const allowed = await invoke(handler, `${API_PREFIX}/list`, {}, 'POST', {})
+  check('未被拒绝的请求照常处理', allowed.status === 200 && allowed.envelope?.ok === true, JSON.stringify(allowed))
+  check('每个请求都问过信任栅栏', rejections.length === 5, String(rejections.length))
 }
 
 console.log(`${passed} 项通过，${failures.length} 项失败`)

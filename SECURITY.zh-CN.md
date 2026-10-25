@@ -21,6 +21,8 @@
 
 ## 已知取舍
 
+- **按设计仅支持 Windows。** 数据密钥依赖 Windows DPAPI、askpass 辅助程序是 Windows `.cmd`；
+  没有非 Windows 的密钥存储方案，插件在其它平台上会拒绝加载，而不是退回明文密钥文件。
 - **`credentialRef` 指向的文件是明文。** `%DSH_HOME%\.credentials.yaml` 未经加密，
   它换来的是「口令不进对话」，不是「口令加密落盘」。
   想要两者兼得，请用离线录入通道 `scripts/set-secret.mjs`。

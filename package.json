@@ -1,8 +1,11 @@
 {
   "name": "dsh-ssh-vault",
-  "version": "1.15.0",
+  "version": "2.0.0",
   "type": "module",
-  "description": "Encrypted SSH host vault and model-facing SSH tools for the DeepSeek Harness",
+  "description": "Encrypted SSH host vault and model-facing SSH tools for the DeepSeek Harness — Windows only",
+  "os": [
+    "win32"
+  ],
   "license": "MIT",
   "author": "scientificmaniac",
   "repository": {
@@ -25,7 +28,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node test/diagnose.mjs && node test/unit.mjs && node test/background.mjs && node test/vault-api.mjs && node test/i18n.mjs && node test/host-apply.mjs && node test/client-smoke.mjs",
+    "test": "node test/platform.mjs && node test/diagnose.mjs && node test/unit.mjs && node test/background.mjs && node test/vault-api.mjs && node test/i18n.mjs && node test/host-apply.mjs && node test/client-smoke.mjs",
     "test:live": "node test/live.mjs",
     "test:self": "node test/selftest.mjs"
   },
@@ -55,8 +58,8 @@
   ],
   "icon": "./icon.svg",
   "meta": {
-    "title": "SSH Vault",
-    "description": "Connect to Linux hosts over SSH with the host address, port, account, and password kept in an encrypted vault."
+    "title": "SSH Vault (Windows)",
+    "description": "Connect to remote hosts over SSH from Windows with the host address, port, account, and password kept in an encrypted vault."
   },
   "dsh": {
     "bundle": {

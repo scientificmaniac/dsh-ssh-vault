@@ -22,6 +22,9 @@ In one sentence: it protects **credentials at rest**, not a machine that has alr
 
 ## Known trade-offs
 
+- **Windows only, by construction.** The data key depends on Windows DPAPI and the askpass helper is a
+  Windows `.cmd`; there is no non-Windows key store, and the plugin refuses to load elsewhere instead of
+  falling back to a plaintext key file.
 - **`credentialRef` points at a plaintext file.** `%DSH_HOME%\.credentials.yaml` is not encrypted. It buys
   "no password in the conversation", not "encrypted at rest". To get both, use the offline entry channel
   `scripts/set-secret.mjs`.

@@ -5,12 +5,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-1.15.0-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-279%20cases-brightgreen.svg)](test)
+[![Version](https://img.shields.io/badge/version-2.0.0-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-314%20cases-brightgreen.svg)](test)
 
 SSH for DeepSeek Harness agents: host address, port, account, password and private key live in an encrypted vault, and the conversation only ever uses an alias. The model never sees a password, and a password never reaches a command line or a remote process list.
 
 ## Overview
+
+**Windows only.** The vault data key is protected by Windows DPAPI and the `SSH_ASKPASS` helper is a Windows `.cmd` wrapper; the plugin declares `os: ["win32"]` and refuses to start anywhere else rather than storing the key as plaintext.
 
 Three capabilities in one plugin:
 
@@ -47,13 +49,15 @@ dsh plugin --profile desktop list
 
 **Restart DSH after installing.** Host-side tools and routes are loaded at startup.
 
+**This package is Windows only.** `package.json` declares `os: ["win32"]`, so `dsh plugin ... install` refuses to install it on Linux or macOS; a checkout loaded on another platform refuses to start for the same reason (see [Known limitations](#platform-and-authentication)).
+
 ### Requirements
 
 | Item | Requirement |
 | --- | --- |
 | Node | ≥ 20 |
-| Machine | OpenSSH client installed (`ssh` on PATH) |
-| Platform | Windows, Linux, macOS |
+| Machine | Windows 10 / 11 with the OpenSSH Client enabled (`ssh -V` prints a version) |
+| Platform | **Windows only** (`win32`) — installation and loading are refused on Linux / macOS |
 
 ## Quick start
 
@@ -174,7 +178,7 @@ flowchart TB
 Three invariants hold across that chain:
 
 1. **A password never reaches a command line** — local ssh receives it through `SSH_ASKPASS`; remote sudo is primed over stdin
-2. **Only ciphertext touches disk** — AES-256-GCM, with the data key protected by DPAPI (Windows) or derived from a master passphrase via scrypt
+2. **Only ciphertext touches disk** — AES-256-GCM, with the data key protected by Windows DPAPI (or, optionally, derived from a master passphrase via scrypt)
 3. **`~/.ssh` is never touched** — `known_hosts` points into the vault directory and `HashKnownHosts` is enabled
 
 ## Configuration
@@ -186,7 +190,7 @@ Behaviour is shaped by the following:
 | Item | Notes |
 | --- | --- |
 | Vault directory | Defaults to `$DSH_HOME/ssh-vault`; `DSH_HOME` is decided by DSH |
-| Key protection | Windows defaults to `dpapi`; other platforms require a master passphrase (`passphrase` mode) |
+| Key protection | `dpapi` (Windows DPAPI, the default) or `passphrase` (scrypt-derived key, no key material on disk). `file` stores the key as plaintext and is an explicit opt-in only |
 | Timeouts | `ssh_run` defaults to 120s, adjustable, capped at 30 minutes; commands inside `/hosts` are fixed at 120s |
 | Health checks | Settings page and `/hosts` probe with a 15s timeout; the background sweep refreshes every 5 minutes |
 
@@ -240,6 +244,8 @@ Mounted at `/ssh-vault` (`kind: 'prefix'`, **no trailing slash**). `POST` only, 
 
 `openVault` **accepts no path argument at all** — it can only open the plugin's own vault directory.
 
+Every request crosses the Host Connection trust fence **before** the handler looks at the method, the body or the vault: it calls `ctx.connection.requestRejection(req)`, the same Host/Origin check and browser-session authentication used by `/api`. A rejected request gets `401` / `403` and never reaches the vault, so a DNS-rebinding or cross-site call cannot read host data or trigger a probe.
+
 ### About `ctx.systemPrompt.section`
 
 **This plugin does not use that extension point.** Every tool carries its own `description`, and no section is injected into the system prompt, so prompt length and ordering are unaffected.
@@ -282,7 +288,8 @@ The two halves behave differently, and this is easy to get wrong:
 
 ### Platform and authentication
 
-- **`dpapi` key protection is Windows-only.** On Linux and macOS the `passphrase` mode is required (a master passphrase, with the key derived through scrypt)
+- **Windows only.** The data key is protected by Windows DPAPI and the `SSH_ASKPASS` helper is a Windows `.cmd`; the repository therefore declares `os: ["win32"]`. There is no Linux/macOS mode: running the code there would have to fall back to a plaintext `key.json`, so the plugin refuses to load instead. SSH still targets Linux/Unix hosts *remotely* — the restriction is on the machine running DSH.
+- **`dpapi` is the default key protection; `passphrase` is available** (a master passphrase, with the key derived through scrypt). `file` stores the key as plaintext and must be chosen explicitly; it is not a fallback.
 - **The Settings UI supports only password and private-key authentication.** The `agent` auth type can be set through `ssh_hosts add`, but the form cannot enter or edit it
 - **Remote shells supported: bash / sh / cmd / powershell.** Sudo priming applies to POSIX shells only
 
@@ -338,7 +345,7 @@ Not verified in detail; check the source or upstream docs before relying on them
 | Category | Accessed | Detail |
 | --- | --- | --- |
 | Filesystem | **Yes** | The vault directory (`vault.json`, `key.json`, `known_hosts`, uploaded key copies) and any private-key path you supply; **never** `~/.ssh` |
-| Network | **Yes** | Outbound SSH through the local `ssh` / `scp` processes; loopback HTTP routes (same origin, behind the host trust layer) |
+| Network | **Yes** | Outbound SSH through the local `ssh` / `scp` processes; loopback HTTP routes (same origin, behind the Host Connection trust fence) |
 | Terminal | **Yes** | Spawns the local OpenSSH client; `openVault` launches the system file manager |
 | External APIs | **No** | No third-party service is contacted |
 | User data | **Yes** | Host address, port, account, password, private key, note, tags |
@@ -353,7 +360,7 @@ Not verified in detail; check the source or upstream docs before relying on them
 
 ### Trust boundary
 
-The web routes ride on the DSH web server, and unauthenticated requests are refused by its trust layer (401/403). The plugin adds no authentication of its own, so **do not expose the DSH web port to an untrusted network**.
+The web routes ride on the DSH web server and ask the Host Connection service for a rejection first (the same Host/Origin fence and browser-session authentication as `/api`). The plugin adds no authentication of its own beyond that, so **do not expose the DSH web port to an untrusted network**.
 
 ### Reporting a vulnerability
 
@@ -387,6 +394,9 @@ Use the `/hosts host; command` form; the output splits into a reachability card 
 
 **I switched DSH to English but some plugin text is still Chinese.**
 From 1.15.0 the whole surface follows the DSH language. After upgrading, reload the page once (client half) and restart DSH once (host half) to load the new code; after that, switching the language in Settings applies immediately, no reload needed. Model-facing tool definitions stay English by design.
+
+**Does it work on Linux or macOS?**
+No. The data key is protected by Windows DPAPI and the `SSH_ASKPASS` helper is a Windows `.cmd`; any non-Windows path would have to store the key as plaintext, so the plugin refuses to load there. `package.json` declares `os: ["win32"]` and installation is rejected elsewhere. The *remote* hosts can of course be Linux/Unix — only the machine running DSH must be Windows.
 
 **Client code changed but the interface did not.**
 Reload the page. Host-side changes need a DSH restart.

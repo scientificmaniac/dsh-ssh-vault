@@ -1,4 +1,4 @@
 {
-  "title": "SSH Vault",
-  "description": "Connect to Linux hosts over SSH with the host address, port, account, and password kept in an encrypted vault."
+  "title": "SSH Vault (Windows)",
+  "description": "Windows-only: connect to remote hosts over SSH with the host address, port, account, and password kept in an encrypted vault."
 }

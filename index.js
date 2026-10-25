@@ -15,6 +15,7 @@ import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
 import { LOCALE_SETTINGS_NAMESPACE, applyPreference, onLocaleChange, readLocalePreference, t } from './lib/i18n.js'
+import { assertSupportedPlatform } from './lib/platform.js'
 import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, looksLikeNaturalLanguage, parseExitStatus, probeCommand, renderTerminalBlock, runRemote, shellKind, transferFile } from './lib/ssh.js'
 import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi } from './lib/vault-api.js'
 import { Vault, defaultVaultDir, maskHost, maskUser } from './lib/vault.js'
@@ -158,6 +159,11 @@ function renderRun(result) {
  * @param config - Loader 行中的配置。
  */
 export function apply(ctx, config = {}) {
+  // Windows-only by design: DPAPI protects the data key and the askpass wrapper is a .cmd.
+  // Refuse to load elsewhere instead of silently degrading the key to a plaintext file.
+  // `package.json` `os: ["win32"]` blocks installation up front; this is the runtime backstop.
+  assertSupportedPlatform()
+
   const vaultDir = typeof config.vaultDir === 'string' && config.vaultDir.length > 0
     ? config.vaultDir
     : defaultVaultDir()
@@ -959,7 +965,16 @@ export function apply(ctx, config = {}) {
 
   // —— 设置界面的管理接口：口令经 HTTP body 提交，不进入会话日志 ——
   ctx.inject(['webServer'], (webCtx) => {
-    const api = createVaultApi({ vault, vaultDir, probe: probeHost, logger: ctx.logger })
+    const api = createVaultApi({
+      vault,
+      vaultDir,
+      probe: probeHost,
+      logger: ctx.logger,
+      // 这条路由能读写凭据与私钥，必须和 /api 一样过宿主的 Connection 信任栅栏：
+      // Host/Origin 校验（防 DNS rebinding / 跨站调用）+ 浏览器登录认证。
+      // connection 服务缺失时（非 Web 组合）退回放行，由宿主自身的鉴权层兜底。
+      requestRejection: (req) => ctx.get('connection')?.requestRejection?.(req),
+    })
     webCtx.effect(() => webCtx.webServer.register({ kind: 'prefix', path: API_PREFIX, handler: api }))
   })
 

@@ -6,9 +6,42 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
 
-Nothing pending.
+
+## [2.0.0] - 2026-10-25
+
+### Removed
+
+- **Linux and macOS support is gone — by declaration and by code.** The vault data key relies on
+  Windows DPAPI and the `SSH_ASKPASS` helper is a Windows `.cmd`; off Windows the previous code
+  silently wrote the data key to `key.json` as plaintext. That is a security downgrade, not support.
+  The package now declares `os: ["win32"]`, so installation is rejected elsewhere, and both
+  `apply()` and the `Vault` constructor refuse to run.
+
+### Changed
+
+- **Everything says Windows only**: `package.json` description and `meta`, `locale/{en,zh}.json`,
+  the marketplace entry, and both READMEs (overview, requirements, limitations, FAQ).
+- The new `lib/platform.js` owns the supported-platform list, friendly platform names, and the
+  refusal message; `test/platform.mjs` pins the declaration to `package.json`.
+- `test/host-apply.mjs` exercises the refusal path when the suite runs on a non-Windows host.
+- Regression cover for the settings-route fence: the settings-API suite checks 401/403 bodies and
+  no-store headers, that rejection happens **before** method and body handling, that a rejected
+  request never writes to the vault, and that the integration wiring passes the host `connection`
+  service through (`test/vault-api.mjs`, `test/host-apply.mjs`). 314 tests total.
+- The marketplace entry points at the v2.0.0 tarball.
+
+### Fixed
+
+- **The README promised Linux/macOS while the implementation could only degrade there.** The
+  documentation/code mismatch is closed in the honest direction: no plaintext fallback exists on
+  any platform, and unsupported platforms fail loudly at install and at load.
+- **The settings routes now cross the Host Connection trust fence.** Every `/ssh-vault/*` request
+  first asks `ctx.connection.requestRejection(req)` — the same Host/Origin check and browser-
+  session authentication used by `/api` — before it looks at the method, the body or the vault.
+  Rejected requests get `401`/`403` and cannot read host data, trigger a probe, or even learn
+  whether an action exists. A vault-and-credential endpoint should not rely solely on the
+  surrounding server, as the review pointed out.
 
 ## [1.15.0] - 2026-10-24
 

@@ -64,7 +64,10 @@ user's `~/.ssh`.
 ## 2. Development environment
 
 - Node.js >= 20 (see `engines` in `package.json`)
-- Windows 10 1809+ with the OpenSSH Client enabled (`ssh -V` prints a version); Linux and macOS work natively
+- Windows 10 / 11 with the OpenSSH Client enabled (`ssh -V` prints a version). **The plugin is Windows-only by
+  design** — DPAPI protects the data key and the askpass helper is a Windows `.cmd`; `package.json` declares
+  `os: ["win32"]` and the runtime refuses to load elsewhere. Do not reintroduce a non-Windows code path that
+  stores the key as plaintext.
 - **No `npm install` needed** — the project has no dependencies
 
 ## 3. Tests

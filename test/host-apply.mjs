@@ -13,6 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { apply } from '../index.js'
 import { applyPreference, resetLocaleForTests, t } from '../lib/i18n.js'
+import { API_PREFIX } from '../lib/vault-api.js'
 
 let passed = 0
 const failures = []
@@ -37,6 +38,10 @@ function harness(initialPreference) {
     commands: [],
     settingsListeners: [],
     labels: [],
+    routes: [],
+    connection: {
+      requestRejection: (req) => (req?.headers?.['x-test-reject'] === '403' ? 403 : undefined),
+    },
   }
   const cleanups = []
   const emitSettingsUpdate = (namespace) => {
@@ -58,7 +63,12 @@ function harness(initialPreference) {
             describe: () => [{ ns: 'locale', value: { preference: state.preference } }],
           }
         } else if (name === 'webServer') {
-          services.webServer = { register: () => () => {} }
+          services.webServer = {
+            register: (route) => {
+              state.routes.push(route)
+              return () => {}
+            },
+          }
         } else if (name === 'commands') {
           services.commands = {
             register: (definition) => {
@@ -81,7 +91,8 @@ function harness(initialPreference) {
         if (index >= 0) state.settingsListeners.splice(index, 1)
       }
     },
-    get() {
+    get(name) {
+      if (name === 'connection') return state.connection
       return undefined
     },
     tools: {
@@ -109,6 +120,23 @@ function harness(initialPreference) {
 }
 
 try {
+  if (process.platform !== 'win32') {
+    // 这个插件声明为 Windows-only：非 Windows 上 apply 必须在任何注册之前抛错，
+    // 而不是带着明文密钥/缺失的 askpass 继续启动。
+    const refused = harness('zh')
+    let error
+    try {
+      apply(refused.ctx, { vaultDir, keyProtection: 'file' })
+    } catch (caught) {
+      error = caught
+    }
+    check('非 Windows 平台拒绝加载', error instanceof Error && /Windows|Windows only|仅支持 Windows/.test(error.message),
+      error === undefined ? 'apply 没有抛错' : String(error.message))
+    check('拒绝加载时不注册工具', refused.state.tools.length === 0, String(refused.state.tools.length))
+    check('拒绝加载时不注册命令', refused.state.commands.length === 0, String(refused.state.commands.length))
+    check('拒绝加载时不订阅设置文档', refused.state.settingsListeners.length === 0, String(refused.state.settingsListeners.length))
+  } else {
+
   // —— 中文界面：注册项与结果正文都是中文 ——
   resetLocaleForTests()
   const zh = harness('zh')
@@ -116,6 +144,32 @@ try {
 
   check('注册 4 个工具', zh.state.tools.length === 4, String(zh.state.tools.length))
   check('注册 /hosts 命令', zh.state.commands.length === 1, String(zh.state.commands.length))
+
+  // 设置接口必须把请求交给宿主 Connection 的信任栅栏（与 /api 同一套判定）。
+  const apiRoute = zh.state.routes.find((route) => route.path === API_PREFIX)
+  check('注册设置接口路由', apiRoute !== undefined)
+  if (apiRoute !== undefined) {
+    const rejectedRes = {
+      statusCode: 0,
+      headers: undefined,
+      body: '',
+      writeHead(status, headers) {
+        this.statusCode = status
+        this.headers = headers
+      },
+      end(chunk) {
+        this.body = chunk ?? ''
+      },
+    }
+    await apiRoute.handler({
+      method: 'POST',
+      url: `${API_PREFIX}/list`,
+      headers: { 'x-test-reject': '403' },
+    }, rejectedRes)
+    check('设置接口先过宿主信任栅栏', rejectedRes.statusCode === 403 && rejectedRes.body === 'forbidden',
+      `${rejectedRes.statusCode}/${rejectedRes.body}`)
+  }
+
   const zhCommand = zh.state.commands[0]
   check('中文界面下命令描述为中文', zhCommand?.description === t('hosts.description', {}, 'zh'), zhCommand?.description)
   check('中文界面下输入提示为中文', zhCommand?.input?.hint === t('hosts.hint', {}, 'zh'), zhCommand?.input?.hint)
@@ -160,6 +214,7 @@ try {
   // 显式偏好保持到进程结束也无妨；这里恢复默认，便于未来追加用例。
   resetLocaleForTests()
   applyPreference('zh')
+  }
 } finally {
   await rm(vaultDir, { recursive: true, force: true })
 }

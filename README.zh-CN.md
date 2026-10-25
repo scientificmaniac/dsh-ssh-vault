@@ -5,12 +5,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-1.15.0-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-279%20cases-brightgreen.svg)](test)
+[![Version](https://img.shields.io/badge/version-2.0.0-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-314%20cases-brightgreen.svg)](test)
 
 给 DeepSeek Harness 的智能体提供 SSH 能力：主机地址、端口、账号、口令与私钥都存进加密保险库，对话里只用别名。模型永远看不到口令，口令也不会出现在命令行或远端进程列表里。
 
 ## 简介
+
+**仅支持 Windows。** 保险库数据密钥由 Windows DPAPI 保护，`SSH_ASKPASS` 辅助程序是 Windows 的 `.cmd` 包装器；插件声明了 `os: ["win32"]`，在其它平台上直接拒绝启动，而不是把密钥退化成明文。
 
 三个能力合在一个插件里：
 
@@ -47,13 +49,15 @@ dsh plugin --profile desktop list
 
 安装完成后**重启 DSH**。Host 侧的工具与路由在重启后才会加载。
 
+**本插件仅支持 Windows。** `package.json` 声明了 `os: ["win32"]`，因此在 Linux / macOS 上 `dsh plugin ... install` 会直接拒绝安装；从源码加载也会因为同样的原因拒绝启动（见[已知限制](#平台与认证)）。
+
 ### 环境要求
 
 | 项 | 要求 |
 | --- | --- |
 | Node | ≥ 20 |
-| 本机 | 已安装 OpenSSH 客户端（`ssh` 在 PATH 中） |
-| 平台 | Windows、Linux、macOS |
+| 本机 | Windows 10 / 11，且启用 OpenSSH 客户端（`ssh -V` 能输出版本） |
+| 平台 | **仅 Windows**（`win32`）——Linux / macOS 上安装与加载都会被拒绝 |
 
 ## 快速开始
 
@@ -174,7 +178,7 @@ flowchart TB
 三条约束贯穿整条链路：
 
 1. **口令从不出现在命令行**——本地 ssh 经 `SSH_ASKPASS` 取口令；远端 sudo 经 stdin 预置缓存
-2. **磁盘上只有密文**——AES-256-GCM 加密，数据密钥由 DPAPI（Windows）或主口令经 scrypt 派生后保护
+2. **磁盘上只有密文**——AES-256-GCM 加密，数据密钥由 Windows DPAPI 保护（也可以选择由主口令经 scrypt 派生）
 3. **不碰用户的 `~/.ssh`**——`known_hosts` 固定指向保险库目录，并启用 `HashKnownHosts`
 
 ## 配置
@@ -186,7 +190,7 @@ flowchart TB
 | 项 | 说明 |
 | --- | --- |
 | 保险库目录 | 默认 `$DSH_HOME/ssh-vault`；`DSH_HOME` 由 DSH 决定 |
-| 密钥保护方式 | Windows 默认 `dpapi`；其它平台需主口令（`passphrase` 模式） |
+| 密钥保护方式 | `dpapi`（Windows DPAPI，默认）或 `passphrase`（scrypt 派生，磁盘上不保存密钥材料）。`file` 会把密钥以明文保存，只能显式选择，且不会被当作回退 |
 | 超时 | `ssh_run` 默认 120 秒，可调，上限 30 分钟；`/hosts` 内的命令固定 120 秒 |
 | 连通性体检 | 设置页与 `/hosts` 用 15 秒探测超时；后台每 5 分钟刷新缓存 |
 
@@ -240,6 +244,8 @@ flowchart TB
 
 `openVault` **不接受任何路径参数**，只能打开插件自己的保险库目录。
 
+每个请求都会在真正处理之前先过宿主 Connection 的信任栅栏：调用 `ctx.connection.requestRejection(req)`，与 `/api` 使用同一套 Host/Origin 校验与浏览器登录认证。被拒绝的请求得到 `401` / `403`，既不会接触保险库，也无法探测动作是否存在，因此 DNS rebinding 或跨站调用读不到主机数据、也触发不了探测。
+
 ### 关于 `ctx.systemPrompt.section`
 
 **本插件未使用该扩展点。** 工具都在定义里自带 `description`，没有向系统提示词注入任何段落，因此不影响提示词长度或顺序。
@@ -282,7 +288,8 @@ flowchart TB
 
 ### 平台与认证
 
-- **`dpapi` 密钥保护仅 Windows 可用。** Linux / macOS 必须使用 `passphrase` 模式（主口令经 scrypt 派生密钥）
+- **仅支持 Windows。** 数据密钥由 Windows DPAPI 保护，`SSH_ASKPASS` 辅助程序是 Windows 的 `.cmd`；因此仓库声明 `os: ["win32"]`。没有 Linux/macOS 模式：在那类平台上继续运行只能把密钥退化成明文 `key.json`，所以插件直接拒绝加载。SSH 的目标仍可以是 Linux/Unix 主机——限制的是运行 DSH 的这台机器。
+- **默认 `dpapi`，也支持 `passphrase`**（主口令经 scrypt 派生密钥）。`file` 会把密钥以明文保存，只能显式选择，不是回退路径。
 - **设置界面只支持口令与私钥两种认证。** 工具侧的 `agent` 认证类型可通过 `ssh_hosts add` 设置，但设置界面无法录入或编辑
 - **远端 shell 支持 bash / sh / cmd / powershell。** `sudo` 预置仅对 POSIX shell 生效
 
@@ -335,7 +342,7 @@ Windows OpenSSH 对**已锁定**的账户是直接断开连接，而不是回 `P
 | 类别 | 是否访问 | 说明 |
 | --- | --- | --- |
 | 文件系统 | **是** | 保险库目录（`vault.json`、`key.json`、`known_hosts`、上传的私钥副本）与用户指定的私钥路径；**不写** `~/.ssh` |
-| 网络 | **是** | 出站 SSH（本机 `ssh` / `scp` 进程）；本机 HTTP 路由（同源，受宿主信任层保护） |
+| 网络 | **是** | 出站 SSH（本机 `ssh` / `scp` 进程）；本机 HTTP 路由（同源，受 Host Connection 信任栅栏保护） |
 | 终端 | **是** | spawn 本机 OpenSSH 客户端；`openVault` 会启动系统文件管理器 |
 | 外部 API | **否** | 不请求任何第三方服务 |
 | 用户数据 | **是** | 主机地址、端口、账号、口令、私钥、备注、标签 |
@@ -350,7 +357,7 @@ Windows OpenSSH 对**已锁定**的账户是直接断开连接，而不是回 `P
 
 ### 信任边界
 
-Web 路由由 DSH 的 Web 服务器承载，未认证请求会被信任层拒绝（401/403）。插件自身不做额外鉴权，因此**不要把 DSH 的 Web 端口暴露到不可信网络**。
+Web 路由由 DSH 的 Web 服务器承载，并在处理前向 Host Connection 服务询问是否拒绝（与 `/api` 同一套 Host/Origin 栅栏与浏览器登录认证）。除此之外插件不做自己的鉴权，因此**不要把 DSH 的 Web 端口暴露到不可信网络**。
 
 ### 报告安全问题
 
@@ -384,6 +391,9 @@ Host 侧代码已更新但进程没重启。重启 DSH。
 
 **DSH 切成英文了，插件里还有中文？**
 从 1.15.0 起所有界面文字都跟随 DSH 语言。升级后需要刷新一次页面（Client 半边）并重启一次 DSH（Host 半边）以加载新代码；之后在设置里切语言立即生效，不用再刷新。面向模型的工具定义按设计保持英文。
+
+**Linux / macOS 能用吗？**
+不能。数据密钥由 Windows DPAPI 保护，`SSH_ASKPASS` 辅助程序是 Windows 的 `.cmd`；非 Windows 上继续跑只能把密钥以明文落盘，所以插件直接拒绝加载。`package.json` 声明了 `os: ["win32"]`，在其它平台上安装会被拒绝。**远端**主机当然可以是 Linux/Unix——限制的只是运行 DSH 的这台机器。
 
 **改了客户端代码但界面没变？**
 刷新页面。改了 Host 代码则需重启 DSH。

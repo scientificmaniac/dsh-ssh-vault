@@ -9,6 +9,36 @@
 
 无待发布内容。
 
+## [2.0.0] - 2026-10-25
+
+### 移除
+
+- **Linux 与 macOS 支持被移除——既在声明上，也在代码里。** 保险库数据密钥依赖 Windows DPAPI，
+  `SSH_ASKPASS` 辅助程序是 Windows 的 `.cmd`；此前的代码在非 Windows 上会静默把数据密钥以明文
+  写进 `key.json`。那是安全降级，不是「支持」。现在包声明 `os: ["win32"]`，其它平台上安装会被
+  拒绝；`apply()` 与 `Vault` 构造函数也会拒绝运行。
+
+### 变更
+
+- **所有地方都写明仅 Windows**：`package.json` 的 description 与 `meta`、`locale/{en,zh}.json`、
+  市场条目，以及中英 README（简介、环境要求、已知限制、FAQ）。
+- 新增 `lib/platform.js`，集中维护支持平台列表、平台显示名与拒绝加载的错误文案；
+  `test/platform.mjs` 把代码声明与 `package.json` 的 `os` 字段钉在一起。
+- `test/host-apply.mjs` 在非 Windows 主机上运行时会覆盖「拒绝加载」路径。
+- 为信任栅栏补了回归：设置接口测试覆盖 401/403 响应体与 no-store 头、拒绝发生在方法与请求体
+  处理**之前**、被拒请求绝不写入保险库，以及集成接线确实把宿主的 `connection` 服务传了进来
+  （`test/vault-api.mjs`、`test/host-apply.mjs`）。全套 314 项。
+- 市场条目的 tarball 指向 v2.0.0。
+
+### 修复
+
+- **README 曾承诺 Linux/macOS，而实现只会在那里降级。** 这次按诚实的方向消除文档与代码的不一致：
+  任何平台上都不存在明文回退，不受支持的平台在安装与加载两个阶段都会明确失败。
+- **设置接口现在会先过 Host Connection 的信任栅栏。** 每个 `/ssh-vault/*` 请求都会先调用
+  `ctx.connection.requestRejection(req)`——与 `/api` 相同的 Host/Origin 校验与浏览器登录
+  认证——之后才会看方法、请求体或保险库。被拒绝的请求得到 `401`/`403`，既读不到主机数据、
+  触发不了探测，也无法探测动作是否存在。正如评审指出的，保管凭据的接口不该只依赖外层服务器。
+
 ## [1.15.0] - 2026-10-24
 
 ### 新增

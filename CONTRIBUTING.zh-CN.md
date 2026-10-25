@@ -60,7 +60,9 @@ git diff --cached                  # 逐眼过一遍，尤其看有没有 IP、�
 ## 二、开发环境
 
 - Node.js >= 20（见 `package.json` 的 `engines`）
-- Windows 10 1809+ 且启用 OpenSSH 客户端（`ssh -V` 能输出版本）；Linux / macOS 原生可用
+- Windows 10 / 11 且启用 OpenSSH 客户端（`ssh -V` 能输出版本）。**本插件按设计仅支持 Windows**——数据密钥由
+  DPAPI 保护、askpass 辅助程序是 Windows `.cmd`；`package.json` 声明了 `os: ["win32"]`，运行期也会在其它平台
+  拒绝加载。不要重新引入「非 Windows 上把密钥明文落盘」的代码路径。
 - **不需要 `npm install`**——项目零依赖
 
 ## 三、测试
