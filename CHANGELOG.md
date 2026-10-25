@@ -28,7 +28,7 @@ All notable changes to this project are documented here. The format follows
 - Regression cover for the settings-route fence: the settings-API suite checks 401/403 bodies and
   no-store headers, that rejection happens **before** method and body handling, that a rejected
   request never writes to the vault, and that the integration wiring passes the host `connection`
-  service through (`test/vault-api.mjs`, `test/host-apply.mjs`). 314 tests total.
+  service through (`test/vault-api.mjs`, `test/host-apply.mjs`). 321 tests total.
 - The marketplace entry points at the v2.0.0 tarball.
 
 ### Fixed
@@ -42,6 +42,10 @@ All notable changes to this project are documented here. The format follows
   Rejected requests get `401`/`403` and cannot read host data, trigger a probe, or even learn
   whether an action exists. A vault-and-credential endpoint should not rely solely on the
   surrounding server, as the review pointed out.
+- **Re-uploading a private key for an existing host no longer fails on Windows.** The previous
+  upload's copy is hardened with `icacls` into a user-read-only ACL, which also denies the write
+  needed to overwrite it. The save path now resets the file's ACL (`icacls /reset` on Windows,
+  chmod 0600 elsewhere) before rewriting, so the second upload lands.
 
 ## [1.15.0] - 2026-10-24
 

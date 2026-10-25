@@ -6,16 +6,30 @@
  *
  * 运行：node test/vault-api.mjs
  */
-import { rm } from 'node:fs/promises'
+import { readdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi } from '../lib/vault-api.js'
+import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi, resetFilePermissions } from '../lib/vault-api.js'
 
 /**
  * 测试用的保险库目录。走系统临时目录，因为「上传私钥」的用例会真的落盘；
  * 结束时整目录删除，不在用户磁盘上留东西。
  */
 const VAULT_DIR = path.join(os.tmpdir(), `dsh-ssh-vault-test-${process.pid}`)
+
+/**
+ * 删除测试保险库目录。上传的私钥副本被收紧成了用户只读 ACL（icacls），
+ * 这种 ACL 连删除都拒绝（EPERM），必须先逐个恢复再整目录 rm。
+ */
+async function removeVaultDir() {
+  try {
+    const keyDir = path.join(VAULT_DIR, 'keys')
+    for (const name of await readdir(keyDir)) await resetFilePermissions(path.join(keyDir, name))
+  } catch {
+    // keys/ 不存在（还没跑过上传用例）时无需恢复。
+  }
+  await rm(VAULT_DIR, { recursive: true, force: true })
+}
 
 let passed = 0
 const failures = []
@@ -218,6 +232,12 @@ async function invoke(handler, url, body, method, headers) {
     ...base, privateKeyFile: { name: 'id_rsa.pem', base64: Buffer.from(placeholderPem, 'utf8').toString('base64') },
   })
   check('合法的 PEM 私钥被接受', asPem.envelope.ok === true, JSON.stringify(asPem.envelope))
+
+  // 回归：上一次上传的副本已被收紧成只读 ACL，同名再次上传必须先恢复才能覆盖。
+  const rePem = await invoke(handler, `${API_PREFIX}/save`, {
+    ...base, privateKeyFile: { name: 'id_rsa.pem', base64: Buffer.from(placeholderPem, 'utf8').toString('base64') },
+  })
+  check('同名重复上传私钥可覆盖', rePem.envelope.ok === true, JSON.stringify(rePem.envelope))
 }
 
 // —— remove / test / reveal ——
@@ -300,7 +320,7 @@ async function invoke(handler, url, body, method, headers) {
   check('openVault 失败时报错', failed.envelope.ok === false && String(failed.envelope.error.message).includes('shell unavailable'), JSON.stringify(failed.envelope))
 }
 
-await rm(VAULT_DIR, { recursive: true, force: true })
+await removeVaultDir()
 
 // —— test 必须走短超时：设置页会给每台主机自动体检，一条不通的主机不能拖住整页 ——
 {

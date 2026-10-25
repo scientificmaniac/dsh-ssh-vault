@@ -10,7 +10,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
 [![Version](https://img.shields.io/badge/version-2.0.0-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-314%20cases-brightgreen.svg)](test)
+[![Tests](https://img.shields.io/badge/test-321%20cases-brightgreen.svg)](test)
 
 </div>
 

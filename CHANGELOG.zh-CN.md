@@ -27,7 +27,7 @@
 - `test/host-apply.mjs` 在非 Windows 主机上运行时会覆盖「拒绝加载」路径。
 - 为信任栅栏补了回归：设置接口测试覆盖 401/403 响应体与 no-store 头、拒绝发生在方法与请求体
   处理**之前**、被拒请求绝不写入保险库，以及集成接线确实把宿主的 `connection` 服务传了进来
-  （`test/vault-api.mjs`、`test/host-apply.mjs`）。全套 314 项。
+  （`test/vault-api.mjs`、`test/host-apply.mjs`）。全套 321 项。
 - 市场条目的 tarball 指向 v2.0.0。
 
 ### 修复
@@ -38,6 +38,9 @@
   `ctx.connection.requestRejection(req)`——与 `/api` 相同的 Host/Origin 校验与浏览器登录
   认证——之后才会看方法、请求体或保险库。被拒绝的请求得到 `401`/`403`，既读不到主机数据、
   触发不了探测，也无法探测动作是否存在。正如评审指出的，保管凭据的接口不该只依赖外层服务器。
+- **Windows 上对同一主机重复上传私钥不再失败。** 上一次上传的副本已被 icacls 收紧成
+  当前用户只读的 ACL，连覆盖写入所需的权限也被一并剥夺。保存路径现在会在重写前先恢复
+  该文件的 ACL（Windows 上 `icacls /reset`，其余平台 chmod 0600），第二次上传即可落盘。
 
 ## [1.15.0] - 2026-10-24
 
