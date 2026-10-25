@@ -30,8 +30,17 @@ Under the hood it drives the local OpenSSH client (`ssh` / `scp`). It does not i
 
 ## Install
 
+From npm. The plugin is published as [`dsh-ssh-vault`](https://www.npmjs.com/package/dsh-ssh-vault); the bare name below resolves against the registry:
+
 ```bash
 dsh plugin --profile desktop install dsh-ssh-vault
+```
+
+To pin a release or install offline, fetch the tarball with npm and hand the file to the same command:
+
+```bash
+npm pack dsh-ssh-vault        # writes dsh-ssh-vault-<version>.tgz into the current directory
+dsh plugin --profile desktop install ./dsh-ssh-vault-<version>.tgz
 ```
 
 From a local checkout. The argument is a path, so `.` works when you are already inside the plugin directory:

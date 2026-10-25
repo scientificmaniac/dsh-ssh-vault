@@ -30,8 +30,17 @@
 
 ## 安装
 
+从 npm 安装。插件已发布为 [`dsh-ssh-vault`](https://www.npmjs.com/package/dsh-ssh-vault)；下面这种只写包名的形式会自动解析到 npm registry：
+
 ```bash
 dsh plugin --profile desktop install dsh-ssh-vault
+```
+
+需要固定版本或离线安装时，先用 npm 拉取 tarball，再把文件交给同一条命令：
+
+```bash
+npm pack dsh-ssh-vault        # 在当前目录生成 dsh-ssh-vault-<version>.tgz
+dsh plugin --profile desktop install ./dsh-ssh-vault-<version>.tgz
 ```
 
 从本地目录安装。参数是路径，已经在插件目录里时直接用 `.`：
