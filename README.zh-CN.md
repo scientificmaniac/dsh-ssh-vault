@@ -1,4 +1,8 @@
+<div align="center">
+
 # dsh-ssh-vault
+
+![DSH-SSH-Vault 宣传横幅](assets/banner.png)
 
 **简体中文** | [English](README.md)
 
@@ -7,6 +11,8 @@
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
 [![Version](https://img.shields.io/badge/version-2.0.0-informational.svg)](package.json)
 [![Tests](https://img.shields.io/badge/test-314%20cases-brightgreen.svg)](test)
+
+</div>
 
 给 DeepSeek Harness 的智能体提供 SSH 能力：主机地址、端口、账号、口令与私钥都存进加密保险库，对话里只用别名。模型永远看不到口令，口令也不会出现在命令行或远端进程列表里。
 

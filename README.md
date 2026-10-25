@@ -1,4 +1,8 @@
+<div align="center">
+
 # dsh-ssh-vault
+
+![DSH-SSH-Vault banner](assets/banner.png)
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -7,6 +11,8 @@
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
 [![Version](https://img.shields.io/badge/version-2.0.0-informational.svg)](package.json)
 [![Tests](https://img.shields.io/badge/test-314%20cases-brightgreen.svg)](test)
+
+</div>
 
 SSH for DeepSeek Harness agents: host address, port, account, password and private key live in an encrypted vault, and the conversation only ever uses an alias. The model never sees a password, and a password never reaches a command line or a remote process list.
 
