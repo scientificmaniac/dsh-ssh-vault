@@ -8,6 +8,23 @@ All notable changes to this project are documented here. The format follows
 
 
 
+## [2.1.1] - 2026-11-01
+
+### Fixed
+
+- **The cmd invocation was wrong (pre-existing defect)**: `cmd.exe /Q` enters interactive mode, mixing the Windows banner and the `DESKTOP-xxx C:\...>` prompt into stdout and corrupting every structured output. It now runs as `cmd.exe /Q /D /C <script>` — `/D` disables AutoRun, `/Q` disables echo, and the script travels as an argument instead of over stdin.
+- **CRLF output made probe facts vanish silently**: `^##key##(.*)$` never matched on Windows targets, because the JS regex `.` does not match `\r` while cmd and PowerShell emit CRLF. Newlines are normalized before parsing; the helper moved to `lib/ssh.js` and is exported so the behaviour is pinned by unit tests.
+- **`command_array` produced a wrong command on non-POSIX targets**: per-element single quoting is a POSIX rule; cmd does not accept single quotes and PowerShell treats `'x'` as a string literal. It is now rejected at the entry point with a hint to use the `command` string.
+
+### Added
+
+- `test/live-windows.mjs`: a full live regression against win10 (**64 cases**) covering PowerShell common commands and multi-line syntax, cmd common commands, exit codes, CJK and encoding, output truncation, timeout partial output, probe facts, the `command_array` rejection, and file upload/download. Adds `npm run test:live:windows`.
+- The Linux side was re-verified as well: the POSIX `bash --norc -c` default wrapper, `command_array`, LF probe-fact parsing, `loginShell` and CJK output all behave unchanged.
+
+### Known limitations
+
+- **The command line on a cmd target cannot contain non-ASCII characters**: cmd parses the command line ssh hands it using the **system code page**, and `chcp 65001` only affects output produced afterwards, so CJK text in the command itself is already folded to `?` before it runs. Use a PowerShell target for CJK, or encode the payload as ASCII (PowerShell's `-EncodedCommand`).
+
 ## [2.1.0] - 2026-11-01
 
 ### Added

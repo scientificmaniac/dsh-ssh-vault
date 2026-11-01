@@ -9,8 +9,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-2.1.0-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-490%20cases-brightgreen.svg)](test)
+[![Version](https://img.shields.io/badge/version-2.1.1-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-493%20cases-brightgreen.svg)](test)
 
 </div>
 
@@ -322,6 +322,8 @@ The two halves behave differently, and this is easy to get wrong:
 - **The Settings UI supports only password and private-key authentication.** The `agent` auth type can be set through `ssh_hosts add`, but the form cannot enter or edit it
 - **Remote shells supported: bash / sh / cmd / powershell.** The three sudo forms apply to POSIX shells only; on cmd / powershell targets `sudo: true` fails loudly instead of silently degrading
 - **The sudo form follows the target's actual state; it is not a style choice.** `wrap` needs `sudo -n` to work already (root or NOPASSWD); with a password it goes through `script`, which needs that account's sudo password in the vault (`sudoPassword`, falling back to the login password). The automatic choice made by `sudo: true` consults the most recent `ssh_probe` result
+- **The command line on a cmd target cannot contain non-ASCII characters.** cmd parses the command line ssh hands it using the **system code page**, and `chcp 65001` only affects output produced afterwards, so CJK text in the command itself is already folded to `?` before it runs. Use a PowerShell target for CJK, or encode the payload as ASCII (PowerShell's `-EncodedCommand`). On PowerShell targets the plugin pins the output encoding to UTF-8, so CJK round-trips correctly
+- **cmd targets always run as `cmd.exe /Q /D /C <script>`.** Without `/C`, cmd enters interactive mode and mixes the Windows banner and the `DESKTOP-xxx C:\...>` prompt into stdout; `/D` disables AutoRun and `/Q` disables echo
 
 ### Concurrency
 

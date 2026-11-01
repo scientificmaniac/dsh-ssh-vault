@@ -24,6 +24,7 @@ import {
   ensureAskpass,
   looksLikeNaturalLanguage,
   parseExitStatus,
+  parseProbeFacts,
   parseSudoProbe,
   probeCommand,
   renderTerminalBlock,
@@ -221,20 +222,6 @@ function buildFullProbeScript(shell) {
     // sshd 探测必须放在最后：它的脚本以 `exit 0` 收尾，放中间会把后面的命令全部截断。
     buildSshdProbeCommand(),
   ].join('\n')
-}
-
-/**
- * 把 `##key##value` 形式的探测输出拆成键值表。
- * @param stdout - 远端标准输出。
- * @returns 键值映射。
- */
-function parseProbeFacts(stdout) {
-  const facts = {}
-  for (const line of String(stdout ?? '').split('\n')) {
-    const match = /^##(\w+)##(.*)$/.exec(line)
-    if (match !== null) facts[match[1]] = match[2].trim()
-  }
-  return facts
 }
 
 /**

@@ -22,8 +22,12 @@ const notesFor = (stderr, timedOut = false, target = {}) => diagnose(
 
 // —— shell 翻译 ——
 check('shell 默认 bash', shellArgv(undefined).join(' ') === 'bash -s', shellArgv(undefined).join(' '))
-check('shell cmd', shellArgv('cmd').join(' ') === 'cmd.exe /Q', shellArgv('cmd').join(' '))
-check('shell cmd.exe', shellArgv('cmd.exe').join(' ') === 'cmd.exe /Q')
+check('shell cmd', shellArgv('cmd').join(' ') === 'cmd.exe /Q /D', shellArgv('cmd').join(' '))
+check('shell cmd.exe', shellArgv('cmd.exe').join(' ') === 'cmd.exe /Q /D')
+// 有脚本时必须走 /C 参数模式：不带 /C 的 cmd 会进交互模式，banner 与提示符污染 stdout。
+const cmdWithScript = shellArgv('cmd', 'dir')
+check('shell cmd 带脚本走 /Q /D /C', cmdWithScript.slice(0, 4).join(' ') === 'cmd.exe /Q /D /C', cmdWithScript.join(' '))
+check('shell cmd 脚本作为单个参数', cmdWithScript[4] === 'dir', JSON.stringify(cmdWithScript))
 check('shell powershell', shellArgv('powershell').join(' ').startsWith('powershell -NoProfile'), shellArgv('powershell').join(' '))
 check('shell pwsh', shellArgv('pwsh').join(' ').startsWith('pwsh -NoProfile'))
 check('shell /bin/sh', shellArgv('/bin/sh').join(' ') === '/bin/sh -s')

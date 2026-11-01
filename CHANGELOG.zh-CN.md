@@ -5,6 +5,23 @@
 本文件记录所有值得注意的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.1.1] - 2026-11-01
+
+### 修复
+
+- **cmd 目标的调用方式错误（既有缺陷）**：`cmd.exe /Q` 会进入交互模式，Windows banner 与 `DESKTOP-xxx C:\...>` 提示符混进 stdout，把结构化输出全部污染。改为 `cmd.exe /Q /D /C <script>`——`/D` 关 AutoRun、`/Q` 关回显，脚本作为参数传入，不再依赖 stdin。
+- **CRLF 输出让探测 facts 静默丢失**：`^##key##(.*)$` 在 Windows 目标上永远匹配不上，因为 JS 正则的 `.` **不匹配 `\r`**，而 cmd / PowerShell 的输出是 CRLF。解析前先归一化换行；该函数已移到 `lib/ssh.js` 并导出，便于单测固定行为。
+- **`command_array` 在非 POSIX 目标上会产出错误命令**：逐元素单引号化是 POSIX 规则，cmd 不认单引号、PowerShell 会把 `'x'` 当成字符串字面量。现在在入口直接报错，并提示改用 `command` 字符串。
+
+### 新增
+
+- `test/live-windows.mjs`：win10 真实环境全量回归（**64 项**），覆盖 PowerShell 常用命令与多行语法、cmd 常用命令、退出码、中文与编码、超长截断、超时保留输出、探测 facts、`command_array` 拒绝、文件上传/下载。新增 `npm run test:live:windows`。
+- 顺带回归了 Linux：POSIX 路径的默认 `bash --norc -c` 包装、`command_array`、LF 下的 facts 解析、`loginShell`、中文输出均保持原样。
+
+### 已知限制
+
+- **cmd 目标的命令行不能含非 ASCII 字符**：ssh 传来的命令行由 cmd 按**系统代码页**解析，`chcp 65001` 只影响它之后的输出，命令行里的中文在解析阶段就已折成 `?`。需要中文时请用 PowerShell 目标，或把载荷编码成 ASCII（PowerShell 的 `-EncodedCommand` 即是）。
+
 ## [2.1.0] - 2026-11-01
 
 ### 新增

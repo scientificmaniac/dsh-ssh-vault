@@ -69,7 +69,7 @@ check('ssh 绑定源地址', optionValue(boundArgs, '-b') === '192.0.2.150', bou
 check('ssh 源地址在目标之前', boundArgs.indexOf('-b') < boundArgs.indexOf('root@192.0.2.10'))
 
 const winArgs = buildSshArgs({ record: { ...passwordRecord, shell: 'cmd' }, knownHostsPath, connectTimeoutSec: 10 })
-check('ssh cmd shell', winArgs.slice(-2).join(' ') === 'cmd.exe /Q', winArgs.slice(-2).join(' '))
+check('ssh cmd shell 用 /Q /D', winArgs.slice(-3).join(' ') === 'cmd.exe /Q /D', winArgs.slice(-3).join(' '))
 const psScript = "foreach ($j in @('a','b')) { Write-Output $j }\nWrite-Output 'done'\n"
 const psArgs = buildSshArgs({
   record: { ...passwordRecord, shell: 'powershell' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: psScript,
@@ -111,7 +111,8 @@ check("posix 复杂引号用 '\\'' 形式转义", wrappedTricky.includes(`'\\''`
 const cmdArgs = buildSshArgs({
   record: { ...passwordRecord, shell: 'cmd' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'dir\n',
 })
-check('cmd 不被编码进参数', cmdArgs.slice(-2).join(' ') === 'cmd.exe /Q', cmdArgs.slice(-2).join(' '))
+check('cmd 用 /Q /D /C 传脚本', cmdArgs.slice(-5, -1).join(' ') === 'cmd.exe /Q /D /C', cmdArgs.slice(-5).join(' '))
+check('cmd 脚本作为单个参数传入', cmdArgs[cmdArgs.length - 1] === 'dir\n', JSON.stringify(cmdArgs.slice(-1)))
 
 const keyArgs = buildSshArgs({ record: keyRecord, knownHostsPath, connectTimeoutSec: 10 })
 check('ssh 密钥文件', optionValue(keyArgs, '-i') === 'C:\\keys\\id_rsa', keyArgs.join(' '))
