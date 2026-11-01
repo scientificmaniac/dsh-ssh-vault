@@ -10,7 +10,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
 [![Version](https://img.shields.io/badge/version-2.1.1-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-493%20cases-brightgreen.svg)](test)
+[![Tests](https://img.shields.io/badge/test-504%20cases-brightgreen.svg)](test)
 
 </div>
 
@@ -320,7 +320,7 @@ flowchart TB
 - **仅支持 Windows。** 数据密钥由 Windows DPAPI 保护，`SSH_ASKPASS` 辅助程序是 Windows 的 `.cmd`；因此仓库声明 `os: ["win32"]`。没有 Linux/macOS 模式：在那类平台上继续运行只能把密钥退化成明文 `key.json`，所以插件直接拒绝加载。SSH 的目标仍可以是 Linux/Unix 主机——限制的是运行 DSH 的这台机器。
 - **默认 `dpapi`，也支持 `passphrase`**（主口令经 scrypt 派生密钥）。`file` 会把密钥以明文保存，只能显式选择，不是回退路径。
 - **设置界面只支持口令与私钥两种认证。** 工具侧的 `agent` 认证类型可通过 `ssh_hosts add` 设置，但设置界面无法录入或编辑
-- **远端 shell 支持 bash / sh / cmd / powershell。** sudo 三态仅对 POSIX shell 生效；cmd / powershell 目标上 `sudo: true` 会直接报错而不是静默降级
+- **远端 shell 支持 bash / sh / cmd / powershell，且一台主机可声明多个。** 设置界面的「远程 shell」用逗号分隔，例如 `powershell,cmd`：同一个 Windows 主机既能用 PowerShell 跑结构化命令，也能用 cmd 跑只有 cmd 才认的老工具。每次调用用 `shell` 参数选择（`ssh_run` / `ssh_probe` / `ssh_transfer` / `ssh_tunnel` 都支持），省略时用第一个；显式指定未声明的 shell 会报错，不会静默换成别的。sudo 三态仅对 POSIX shell 生效；cmd / powershell 目标上 `sudo: true` 会直接报错而不是静默降级
 - **sudo 的形态由目标状态决定，不是一种风格。** `wrap` 要求 `sudo -n` 本来就通（root 或 NOPASSWD）；需要口令时走 `script`，因此保险库里必须有该账号的 sudo 口令（`sudoPassword`，缺省复用登录口令）。`sudo: true` 的自动选择会参考 `ssh_probe` 最近一次的探测结论
 - **cmd 目标的命令行不能含非 ASCII 字符。** ssh 传来的命令行由 cmd 按**系统代码页**解析，`chcp 65001` 只影响它之后的输出，命令行里的中文在解析阶段就已折成 `?`。需要中文请用 PowerShell 目标，或把载荷编码成 ASCII（PowerShell 的 `-EncodedCommand`）。PowerShell 目标上插件已固定输出编码为 UTF-8，中文可正常往返
 - **cmd 目标统一用 `cmd.exe /Q /D /C <script>`。** 不带 `/C` 的 cmd 会进交互模式，Windows banner 与 `DESKTOP-xxx C:\...>` 提示符会混进 stdout；`/D` 关 AutoRun、`/Q` 关回显

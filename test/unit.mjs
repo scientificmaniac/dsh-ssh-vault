@@ -6,7 +6,7 @@
  *
  * 运行：node test/unit.mjs
  */
-import { buildDetachScript, buildScpArgs, buildSshArgs, buildSudoScriptRunner, buildSudoWrapCommand, buildWaitScript, classifySudoFailure, diagnoseCategory, looksLikeNaturalLanguage, parseExitStatus, parseSudoProbe, quoteArgv, renderTerminalBlock, runProcess, sudoPrelude } from '../lib/ssh.js'
+import { buildDetachScript, buildScpArgs, buildSshArgs, buildSudoScriptRunner, buildSudoWrapCommand, buildWaitScript, classifySudoFailure, diagnoseCategory, looksLikeNaturalLanguage, parseExitStatus, parseShellList, parseSudoProbe, pickShell, primaryShell, quoteArgv, renderTerminalBlock, runProcess, shellKind, sudoPrelude } from '../lib/ssh.js'
 
 let passed = 0
 const failures = []
@@ -70,6 +70,30 @@ check('ssh 源地址在目标之前', boundArgs.indexOf('-b') < boundArgs.indexO
 
 const winArgs = buildSshArgs({ record: { ...passwordRecord, shell: 'cmd' }, knownHostsPath, connectTimeoutSec: 10 })
 check('ssh cmd shell 用 /Q /D', winArgs.slice(-3).join(' ') === 'cmd.exe /Q /D', winArgs.slice(-3).join(' '))
+
+// —— 多 shell 声明（同一主机两种终端）——
+check('多 shell：拆成列表', parseShellList('powershell,cmd').join('|') === 'powershell|cmd', parseShellList('powershell,cmd').join('|'))
+check('多 shell：全角逗号也认', parseShellList('powershell，cmd').join('|') === 'powershell|cmd', parseShellList('powershell，cmd').join('|'))
+check('多 shell：去空白与空段', parseShellList(' powershell , , cmd ').join('|') === 'powershell|cmd', parseShellList(' powershell , , cmd ').join('|'))
+check('多 shell：未声明退回 bash', parseShellList(undefined).join('|') === 'bash' && parseShellList('').join('|') === 'bash')
+check('多 shell：主 shell 是第一个', primaryShell('cmd,powershell') === 'cmd', primaryShell('cmd,powershell'))
+check('多 shell：省略选择用主 shell', pickShell('powershell,cmd', undefined) === 'powershell', pickShell('powershell,cmd', undefined))
+check('多 shell：显式选择命中不区分大小写', pickShell('powershell,cmd', 'CMD') === 'cmd', pickShell('powershell,cmd', 'CMD'))
+let undeclaredShellError
+try { pickShell('powershell,cmd', 'bash') } catch (error) { undeclaredShellError = error }
+check('多 shell：未声明的 shell 报错', undeclaredShellError instanceof Error && /bash/.test(undeclaredShellError.message),
+  undeclaredShellError === undefined ? '没有抛错' : undeclaredShellError.message)
+check('多 shell：shellKind 取主 shell', shellKind('powershell,cmd') === 'powershell' && shellKind('cmd,powershell') === 'cmd',
+  `${shellKind('powershell,cmd')} / ${shellKind('cmd,powershell')}`)
+const multiDeclared = buildSshArgs({
+  record: { ...passwordRecord, shell: 'powershell,cmd' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'echo hi\n',
+})
+check('多 shell：buildSshArgs 用主 shell 包装', multiDeclared.includes('-EncodedCommand'), multiDeclared.slice(-5).join(' '))
+const multiCmd = buildSshArgs({
+  record: { ...passwordRecord, shell: 'powershell,cmd' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'echo hi\n',
+  shellInvocation: undefined, loginShell: false,
+})
+check('多 shell：主 shell 决定 kind（powershell 不出现 cmd）', !multiCmd.slice(-4).join(' ').includes('cmd.exe'), multiCmd.slice(-4).join(' '))
 const psScript = "foreach ($j in @('a','b')) { Write-Output $j }\nWrite-Output 'done'\n"
 const psArgs = buildSshArgs({
   record: { ...passwordRecord, shell: 'powershell' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: psScript,

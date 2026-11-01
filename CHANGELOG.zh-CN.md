@@ -15,7 +15,8 @@
 
 ### 新增
 
-- `test/live-windows.mjs`：win10 真实环境全量回归（**64 项**），覆盖 PowerShell 常用命令与多行语法、cmd 常用命令、退出码、中文与编码、超长截断、超时保留输出、探测 facts、`command_array` 拒绝、文件上传/下载。新增 `npm run test:live:windows`。
+- **同一主机可声明多个终端（逗号分隔）**：`shell` 字段接受 `powershell,cmd` 这种多值写法，设置界面里直接填即可。每次调用可用 `shell` 参数选择其中一个（`ssh_run` / `ssh_probe` / `ssh_transfer` / `ssh_tunnel` 都支持），省略时用第一个；显式指定未声明的 shell 会明确报错而不是静默回落——cmd 与 PowerShell 的语法没有交集，静默回落只会产生更难查的失败。
+- `test/live-windows.mjs`：win10 真实环境全量回归（**68 项**），覆盖 PowerShell 常用命令与多行语法、cmd 常用命令、退出码、中文与编码、超长截断、超时保留输出、探测 facts、`command_array` 拒绝、多 shell 选择、文件上传/下载。新增 `npm run test:live:windows`。
 - 顺带回归了 Linux：POSIX 路径的默认 `bash --norc -c` 包装、`command_array`、LF 下的 facts 解析、`loginShell`、中文输出均保持原样。
 
 ### 已知限制

@@ -10,7 +10,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
 [![Version](https://img.shields.io/badge/version-2.1.1-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-493%20cases-brightgreen.svg)](test)
+[![Tests](https://img.shields.io/badge/test-504%20cases-brightgreen.svg)](test)
 
 </div>
 
@@ -320,7 +320,7 @@ The two halves behave differently, and this is easy to get wrong:
 - **Windows only.** The data key is protected by Windows DPAPI and the `SSH_ASKPASS` helper is a Windows `.cmd`; the repository therefore declares `os: ["win32"]`. There is no Linux/macOS mode: running the code there would have to fall back to a plaintext `key.json`, so the plugin refuses to load instead. SSH still targets Linux/Unix hosts *remotely* — the restriction is on the machine running DSH.
 - **`dpapi` is the default key protection; `passphrase` is available** (a master passphrase, with the key derived through scrypt). `file` stores the key as plaintext and must be chosen explicitly; it is not a fallback.
 - **The Settings UI supports only password and private-key authentication.** The `agent` auth type can be set through `ssh_hosts add`, but the form cannot enter or edit it
-- **Remote shells supported: bash / sh / cmd / powershell.** The three sudo forms apply to POSIX shells only; on cmd / powershell targets `sudo: true` fails loudly instead of silently degrading
+- **Remote shells supported: bash / sh / cmd / powershell, and one host may declare several.** The Settings form's "Remote shell" field takes a comma-separated list such as `powershell,cmd`: the same Windows host can run structured PowerShell commands and the older tools that only cmd understands. Each call selects one with its `shell` parameter (`ssh_run`, `ssh_probe`, `ssh_transfer` and `ssh_tunnel` all honour it), defaulting to the first; an explicitly requested shell that was not declared is rejected rather than silently swapped. The three sudo forms apply to POSIX shells only; on cmd / powershell targets `sudo: true` fails loudly instead of silently degrading
 - **The sudo form follows the target's actual state; it is not a style choice.** `wrap` needs `sudo -n` to work already (root or NOPASSWD); with a password it goes through `script`, which needs that account's sudo password in the vault (`sudoPassword`, falling back to the login password). The automatic choice made by `sudo: true` consults the most recent `ssh_probe` result
 - **The command line on a cmd target cannot contain non-ASCII characters.** cmd parses the command line ssh hands it using the **system code page**, and `chcp 65001` only affects output produced afterwards, so CJK text in the command itself is already folded to `?` before it runs. Use a PowerShell target for CJK, or encode the payload as ASCII (PowerShell's `-EncodedCommand`). On PowerShell targets the plugin pins the output encoding to UTF-8, so CJK round-trips correctly
 - **cmd targets always run as `cmd.exe /Q /D /C <script>`.** Without `/C`, cmd enters interactive mode and mixes the Windows banner and the `DESKTOP-xxx C:\...>` prompt into stdout; `/D` disables AutoRun and `/Q` disables echo

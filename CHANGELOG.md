@@ -18,7 +18,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- `test/live-windows.mjs`: a full live regression against win10 (**64 cases**) covering PowerShell common commands and multi-line syntax, cmd common commands, exit codes, CJK and encoding, output truncation, timeout partial output, probe facts, the `command_array` rejection, and file upload/download. Adds `npm run test:live:windows`.
+- **One host can declare several terminals (comma-separated)**: the `shell` field accepts values like `powershell,cmd` straight from the Settings form. Each call selects one with the new `shell` parameter (`ssh_run`, `ssh_probe`, `ssh_transfer` and `ssh_tunnel` all honour it) and defaults to the first; an explicitly requested shell that was not declared fails loudly instead of silently falling back — cmd and PowerShell share no syntax, so a silent fallback only produces harder-to-diagnose failures.
+- `test/live-windows.mjs`: a full live regression against win10 (**68 cases**) covering PowerShell common commands and multi-line syntax, cmd common commands, exit codes, CJK and encoding, output truncation, timeout partial output, probe facts, the `command_array` rejection, multi-shell selection, and file upload/download. Adds `npm run test:live:windows`.
 - The Linux side was re-verified as well: the POSIX `bash --norc -c` default wrapper, `command_array`, LF probe-fact parsing, `loginShell` and CJK output all behave unchanged.
 
 ### Known limitations

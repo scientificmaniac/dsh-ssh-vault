@@ -29,6 +29,7 @@ import {
   probeCommand,
   renderTerminalBlock,
   runRemote,
+  pickShell,
   shellKind,
   transferFile,
 } from './lib/ssh.js'
@@ -464,8 +465,11 @@ export function apply(ctx, config = {}) {
   const resolveSudoPlan = async (args, record) => {
     const requested = args.sudo
     if (requested !== true && typeof requested !== 'string') return { mode: 'none' }
-    if (shellKind(record.shell) !== 'posix') {
-      throw new Error(t('sudo.nonPosix', { alias: record.alias, shell: record.shell ?? 'bash' }))
+    // sudo 是否可行取决于**本次实际使用的** shell：同一台 Windows 主机可能声明了
+    // `powershell,cmd`，两个都不是 POSIX，都必须拒绝。
+    const effectiveShell = pickShell(record.shell, args.shell)
+    if (shellKind(effectiveShell) !== 'posix') {
+      throw new Error(t('sudo.nonPosix', { alias: record.alias, shell: effectiveShell }))
     }
     const explicit = typeof requested === 'string' ? requested : args.sudo_mode
     if (explicit !== undefined && !['auto', 'wrap', 'script', 'prime'].includes(explicit)) {
@@ -590,8 +594,9 @@ export function apply(ctx, config = {}) {
         },
         shell: {
           type: 'string',
-          description: 'Remote shell used to run commands: bash by default, /bin/sh for Linux hosts without bash, '
-            + 'cmd or powershell for Windows targets.',
+          description: 'Remote shell(s) used to run commands: bash by default, /bin/sh for Linux hosts without bash, '
+            + 'cmd or powershell for Windows targets. Declare several comma-separated (e.g. "powershell,cmd") to let one host '
+            + 'answer on more than one terminal; calls then pick one with their own shell parameter, defaulting to the first.',
         },
         bindAddress: {
           type: 'string',
@@ -787,6 +792,11 @@ export function apply(ctx, config = {}) {
           description: 'Local address to connect from for this call, overriding the host record. Use it when a rule change '
             + 'may cut the default management path.',
         },
+        shell: {
+          type: 'string',
+          description: 'Which remote shell to use when the host record declares several, comma-separated (e.g. "powershell,cmd"). '
+            + 'Defaults to the first declared one. Must match one of them, because cmd and PowerShell accept completely different commands.',
+        },
         login_shell: {
           type: 'boolean',
           description: 'Run the command through a login shell (bash -lc) instead of a plain one (bash -c). Login shells read '
@@ -897,6 +907,7 @@ export function apply(ctx, config = {}) {
             sudoMode: sudoPlan.mode,
             sudoPassword: sudoPlan.password,
             loginShell: args.login_shell === true,
+            shell: args.shell,
           }, { owner: exec.agent?.id })
         } catch (error) {
           throw new Error(t('err.backgroundRegister', {
@@ -914,6 +925,7 @@ export function apply(ctx, config = {}) {
         sudoMode: sudoPlan.mode,
         sudoPassword: sudoPlan.password,
         loginShell: args.login_shell === true,
+        shell: args.shell,
       }, exec.signal)
     },
   })))
@@ -988,14 +1000,20 @@ export function apply(ctx, config = {}) {
           description: 'On upload, apply the local file\'s permission bits to the remote file. Write bits are stripped first, because '
             + 'a Windows 666 would otherwise become a world-writable file on Linux.',
         },
+        shell: {
+          type: 'string',
+          description: 'Which remote shell to use for the staging commands when the host record declares several, comma-separated '
+            + '(e.g. "powershell,cmd"). Defaults to the first declared one.',
+        },
       },
       required: ['host', 'direction', 'local', 'remote'],
     },
     execute: async (args, exec) => {
       const record = await requireHost(args.host)
       const wantsSudo = args.sudo === true
-      if (wantsSudo && shellKind(record.shell) !== 'posix') {
-        throw new Error(t('sudo.nonPosix', { alias: record.alias, shell: record.shell ?? 'bash' }))
+      const effectiveShell = pickShell(record.shell, args.shell)
+      if (wantsSudo && shellKind(effectiveShell) !== 'posix') {
+        throw new Error(t('sudo.nonPosix', { alias: record.alias, shell: effectiveShell }))
       }
       const cwd = exec.agent?.session?.header?.cwd
       const local = isAbsolute(args.local) || cwd === undefined ? args.local : resolve(cwd, args.local)
@@ -1018,6 +1036,7 @@ export function apply(ctx, config = {}) {
         mode: args.mode,
         owner: args.owner,
         preserveMode: args.preserve_mode === true,
+        shell: args.shell,
         signal: exec.signal,
       }))
       if (result.aborted) {
@@ -1062,15 +1081,22 @@ export function apply(ctx, config = {}) {
           type: 'number',
           description: `Timeout in milliseconds. Defaults to ${defaultTimeoutMs}.`,
         },
+        shell: {
+          type: 'string',
+          description: 'Which remote shell to probe with when the host record declares several, comma-separated (e.g. "powershell,cmd"). '
+            + 'Defaults to the first declared one.',
+        },
       },
       required: ['host'],
     },
     execute: async (args, exec) => {
       const record = await requireHost(args.host)
+      const effectiveShell = pickShell(record.shell, args.shell)
       const connection = await connectionFor(record, normalizeTimeout(args.timeoutMs), args.bindAddress)
       const result = await withHostLock(record.alias, () => runRemote({
         ...connection,
-        command: buildFullProbeScript(record.shell),
+        command: buildFullProbeScript(effectiveShell),
+        shell: args.shell,
         signal: exec.signal,
       }))
       if (result.aborted) throw new Error(t('err.probeCancelled', { output: renderRun(result) }))
@@ -1078,13 +1104,13 @@ export function apply(ctx, config = {}) {
       const endpoint = revealByDefault ? `${record.host}:${record.port}` : `${maskHost(record.host)}:${record.port}`
       const account = revealByDefault ? record.username : maskUser(record.username)
       const header = reachable
-        ? `Connected to ${record.alias} (${endpoint}, ${account}, ${record.auth?.type ?? 'agent'}, shell ${record.shell ?? 'bash'}; vault key protection: ${await vaultKeyMode(vault)})`
+        ? `Connected to ${record.alias} (${endpoint}, ${account}, ${record.auth?.type ?? 'agent'}, shell ${effectiveShell}; vault key protection: ${await vaultKeyMode(vault)})`
         : `Could not verify ${record.alias}`
       if (reachable !== true) return [header, renderRun(result)].join('\n')
 
       const facts = parseProbeFacts(result.stdout)
       const sudo = parseSudoProbe(result.stdout)
-      const posix = shellKind(record.shell) === 'posix'
+      const posix = shellKind(effectiveShell) === 'posix'
       const forwarding = posix
         ? parseSshdForwarding(result.stdout ?? '')
         : { allowTcpForwarding: 'unknown', permitOpen: [], source: 'unknown' }
@@ -1114,7 +1140,7 @@ export function apply(ctx, config = {}) {
           at: new Date().toISOString(),
           os: facts.os,
           kernel: facts.kernel,
-          shell: record.shell ?? 'bash',
+          shell: effectiveShell,
           sudo,
           forwarding: {
             allowTcpForwarding: forwarding.allowTcpForwarding,
@@ -1172,6 +1198,11 @@ export function apply(ctx, config = {}) {
           type: 'number',
           description: `Timeout in milliseconds for the sshd precheck. Defaults to ${defaultTimeoutMs}.`,
         },
+        shell: {
+          type: 'string',
+          description: 'Which remote shell to run the sshd precheck with when the host record declares several, comma-separated. '
+            + 'Defaults to the first declared one.',
+        },
       },
       required: ['action'],
     },
@@ -1205,14 +1236,16 @@ export function apply(ctx, config = {}) {
         throw new Error('forwards is required when action=start, e.g. ["18787:127.0.0.1:8787"].')
       }
       const notes = []
+      const effectiveShell = pickShell(record.shell, args.shell)
       const connection = await connectionFor(record, normalizeTimeout(args.timeoutMs), args.bindAddress)
 
       // 先读 sshd 的转发策略。AllowTcpForwarding no 时现在就把「改什么、怎么改」说清楚，
       // 而不是等 ssh 打出 administratively prohibited 再让模型猜。
-      if (shellKind(record.shell) === 'posix') {
+      if (shellKind(effectiveShell) === 'posix') {
         const probe = await withHostLock(record.alias, () => runRemote({
           ...connection,
           command: buildSshdProbeCommand(),
+          shell: args.shell,
           signal: exec.signal,
         }))
         if (probe.exitCode === 0 && typeof probe.stdout === 'string' && probe.stdout.trim().length > 0) {

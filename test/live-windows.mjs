@@ -330,6 +330,43 @@ try {
     arrayError instanceof Error && /POSIX/.test(arrayError.message),
     arrayError === undefined ? '没有抛错' : arrayError.message)
 
+  // ============================================================
+  // F2. 多 shell 声明：同一台主机 record.shell = 'powershell,cmd'
+  // ============================================================
+  const multiRecord = { ...record, shell: 'powershell,cmd' }
+  const runMulti = (command, extra = {}) => runRemote({
+    ...base,
+    record: multiRecord,
+    command,
+    outputBase: path.join(local, `dump-${++dumpSeq}`),
+    ...extra,
+  })
+
+  const multiDefault = await runMulti('Write-Output "multi-default"')
+  report('多 shell：省略 shell 时用主 shell（powershell）',
+    multiDefault.exitCode === 0 && multiDefault.shellMode === 'encoded' && lf(multiDefault.stdout).includes('multi-default'),
+    JSON.stringify({ shellMode: multiDefault.shellMode, remoteShell: multiDefault.remoteShell, out: lf(multiDefault.stdout).trim() }))
+
+  const multiCmdPick = await runMulti('echo multi-cmd', { shell: 'cmd' })
+  report('多 shell：shell=cmd 走 cmd 路径',
+    multiCmdPick.exitCode === 0 && multiCmdPick.shellMode === 'argument' && lf(multiCmdPick.stdout).includes('multi-cmd'),
+    brief(multiCmdPick))
+
+  const multiPsPick = await runMulti('Write-Output "multi-ps"', { shell: 'powershell' })
+  report('多 shell：shell=powershell 走 powershell 路径',
+    multiPsPick.exitCode === 0 && multiPsPick.shellMode === 'encoded' && lf(multiPsPick.stdout).includes('multi-ps'),
+    brief(multiPsPick))
+
+  let multiBadShell
+  try {
+    await runMulti('echo x', { shell: 'bash' })
+  } catch (error) {
+    multiBadShell = error
+  }
+  report('多 shell：未声明的 shell 明确报错',
+    multiBadShell instanceof Error && /bash/i.test(multiBadShell.message),
+    multiBadShell === undefined ? '没有抛错' : multiBadShell.message)
+
   // 多行脚本（超过单行长度）仍应完整执行：powershell 走 EncodedCommand 不受命令行长度限制。
   const manyLines = Array.from({ length: 40 }, (_, index) => `Write-Output "row-${index}"`).join('\n')
   const psMultiLine = await run('powershell', manyLines)
