@@ -9,8 +9,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-2.0.0-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-321%20cases-brightgreen.svg)](test)
+[![Version](https://img.shields.io/badge/version-2.1.0-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-490%20cases-brightgreen.svg)](test)
 
 </div>
 
@@ -97,10 +97,24 @@ Do not paste passwords into the conversation. A password entered in Settings goe
 | --- | --- | --- |
 | `ssh_hosts` | Manage the vault (list / show / add / update / remove) | "which hosts do I have", "change kali's note" |
 | `ssh_run` | Run a command on a host, return stdout and stderr | "check disk usage on kali" |
-| `ssh_transfer` | Upload or download a file (scp) | "copy this file to /tmp on kali" |
-| `ssh_probe` | Reachability self-check returning system facts | "is kali still reachable" |
+| `ssh_transfer` | Upload or download a file (scp), optionally with sudo | "copy this file to /tmp on kali" |
+| `ssh_probe` | Reachability self-check that also records capability metadata | "is kali still reachable" |
+| `ssh_tunnel` | Maintain local port forwards (`ssh -L`) | "map kali's 8787 to local 18787" |
 
-**Where to see the result:** calls to `ssh_run`, `ssh_probe` and `ssh_transfer` render as a **terminal card** — a header with "host · command" and a state dot, above a scrollable monospace output area. The dot is blue while running, grey on success, red on failure (including a non-zero exit code).
+Conventions for `ssh_run`:
+
+- **Explicit shell wrapping.** POSIX targets run through `bash --norc -c '<command>'`: the command is parsed exactly once by bash and cannot be reinterpreted by the remote login shell (fish/zsh). `login_shell: true` switches to `bash -lc` when you need the PATH that your profile defines. The returned `remoteShell` states what was actually used.
+  `--norc` is not cosmetic: RHEL/CentOS builds of bash carry the `SSH_SOURCE_BASHRC` patch, so a **non-interactive** bash inside an SSH session still sources `~/.bashrc`; one failing `source` line there puts noise on the stderr of every command and derails failure diagnosis.
+- **Command arrays.** `command_array: ["find", ".", "-name", "*.log"]` quotes each element, so the remote shell performs no word splitting, globbing or variable expansion — the double-shell quoting trap disappears.
+- **Three sudo forms.** `sudo: true` picks one automatically; `sudo: "wrap"` runs the whole command as `sudo -n bash -c '...'`; `sudo: "script"` writes a temporary script and runs it as root, so heredocs, pipelines, background jobs and multi-line flows never deform at the privilege boundary — the script is deleted right after, and the password reaches `sudo -S` through a base64 pipe, invisible to either command line and to the remote `ps`; `sudo: "prime"` only pre-warms the cache while the command keeps writing its own sudo. The password always comes from the vault. Once elevated, do **not** write sudo inside the command again.
+- **Error classification.** A failure carries one category label (connection / auth / sudo / remote command / truncated output); sudo failures are further split into "needs a password / not in sudoers / no sudo" with the exact fix.
+- **Large output on disk.** Past the cap, the response keeps a summary and the full stream is written under `outputs/` in the vault directory, with the absolute path attached to the result.
+
+`ssh_transfer` adds three things to scp: `sudo: true` moves root-only files (remote temporary staging plus cleanup); `normalize_eol: true` converts CRLF to LF before uploading, so a script written on Windows does not fail with `$'\r': command not found` (binaries are detected and skipped); `mode` / `owner` / `preserve_mode` set remote permissions and ownership.
+
+`ssh_tunnel` reads the remote `sshd -T` forwarding policy **before** opening a tunnel: with `AllowTcpForwarding no` it hands back a paste-ready `Match User <user>` snippet that allows `LocalForwarding` (rather than globally enabling it) plus the `PermitOpen` explanation, instead of making you hit `administratively prohibited`. It manages the tunnel lifecycle (local port precheck, drop events, exponential-backoff reconnect, cleanup on unload) and returns the local addresses.
+
+**Where to see the result:** calls to `ssh_run`, `ssh_probe`, `ssh_transfer` and `ssh_tunnel` render as a **terminal card** — a header with "host · command" and a state dot, above a scrollable monospace output area. The dot is blue while running, grey on success, red on failure (including a non-zero exit code).
 
 ### Settings UI
 
@@ -306,7 +320,8 @@ The two halves behave differently, and this is easy to get wrong:
 - **Windows only.** The data key is protected by Windows DPAPI and the `SSH_ASKPASS` helper is a Windows `.cmd`; the repository therefore declares `os: ["win32"]`. There is no Linux/macOS mode: running the code there would have to fall back to a plaintext `key.json`, so the plugin refuses to load instead. SSH still targets Linux/Unix hosts *remotely* — the restriction is on the machine running DSH.
 - **`dpapi` is the default key protection; `passphrase` is available** (a master passphrase, with the key derived through scrypt). `file` stores the key as plaintext and must be chosen explicitly; it is not a fallback.
 - **The Settings UI supports only password and private-key authentication.** The `agent` auth type can be set through `ssh_hosts add`, but the form cannot enter or edit it
-- **Remote shells supported: bash / sh / cmd / powershell.** Sudo priming applies to POSIX shells only
+- **Remote shells supported: bash / sh / cmd / powershell.** The three sudo forms apply to POSIX shells only; on cmd / powershell targets `sudo: true` fails loudly instead of silently degrading
+- **The sudo form follows the target's actual state; it is not a style choice.** `wrap` needs `sudo -n` to work already (root or NOPASSWD); with a password it goes through `script`, which needs that account's sudo password in the vault (`sudoPassword`, falling back to the login password). The automatic choice made by `sudo: true` consults the most recent `ssh_probe` result
 
 ### Concurrency
 
@@ -314,6 +329,11 @@ The two halves behave differently, and this is easy to get wrong:
   connection, and a burst of them — especially concurrent `scp` — trips sshd's connection
   limits and accumulates failed-auth counters toward an account lock. Background jobs are
   exempt from the queue so a long task does not block that host for everything else.
+- **Every call opens a fresh SSH connection; there is no reuse.** The Windows OpenSSH client
+  does not support `ControlMaster` / `ControlPersist`: `-G` echoes those options happily, but an
+  actual connection fails with `getsockname failed: Not a socket`. So each call re-handshakes,
+  which is exactly why the per-host serialisation queue exists. If you truly need multiplexing,
+  point the plugin at a Linux ssh client that has Unix domain sockets (e.g. one inside WSL).
 - **The vault has no cross-process lock.** Two DSH instances (different profiles pointing at the same vault directory) writing at the same time means the later write wins
 - Within one profile, writes from several sessions serialize on the event loop, but frequent concurrent edits of the same host are still not advisable
 

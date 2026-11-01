@@ -5,9 +5,34 @@
 本文件记录所有值得注意的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [2.1.0] - 2026-11-01
 
-无待发布内容。
+### 新增
+
+- **`ssh_tunnel` 工具**：维护本地端口转发（`ssh -L`），含 `start` / `list` / `stop`。开隧道**之前**先读远端 `sshd -T`，`AllowTcpForwarding no` 时直接给出按用户放行（`Match User` + `AllowTcpForwarding local`）的可粘贴片段与 `PermitOpen` 说明，而不是让调用方撞上 `administratively prohibited`。含本地端口占用预检、断线事件、指数退避重连，插件卸载时自动清理。新增 `lib/tunnel.js` 与 `test/tunnel-unit.mjs`（133 项）
+- **`ssh_run` 的 `command_array`**：以数组传程序与参数，逐元素引号化，远端 shell 不做分词、通配或变量展开
+- **`ssh_run` 的 `login_shell`**：显式选择登录 shell（`bash -lc`）；默认是非登录的 `bash --norc -c`
+- **`ssh_transfer` 的 `sudo` / `normalize_eol` / `mode` / `owner` / `preserve_mode`**：读写 root-only 文件（远端临时文件中转 + 自动清理）、上传前 CRLF→LF（二进制自动跳过）、设置远端权限与属主
+- **`ssh_probe` 写入主机元数据**：sudo 能力、sshd 转发策略、常用工具、磁盘内存，供 `ssh_run` 的 sudo 自动选择与 `ssh_tunnel` 的预检复用；`ssh_hosts show` 会显示这份摘要
+- **错误分类与大输出落盘**：失败时附类别标签（连接 / 认证 / sudo / 远端命令 / 截断）；输出超限时完整内容写进保险库目录下的 `outputs/`，响应里给出绝对路径
+
+### 变更
+
+- **POSIX 目标改为显式 shell 包装**：`bash --norc -c '<command>'`。命令固定由 bash 解析一次，不再落到远端登录 shell（fish/zsh）上被改写；返回里的 `remoteShell` 说明实际形态。`--norc` 用于抑制 RHEL/CentOS bash 在 SSH 会话中 source `~/.bashrc` 产生的 stderr 噪声
+- **`sudo` 从单一「预热」改为三态**：`wrap`（`sudo -n bash -c '...'`）、`script`（临时脚本以 root 执行，heredoc / 管道 / 后台 / 多行流程都安全，口令经 base64 管道喂给 `sudo -S`，两端命令行与远端 `ps` 均不可见）、`prime`（原有预热行为，保留兼容）。`sudo: true` 自动选择，`sudo_mode` 可强制
+- **sudo 失败归因**：区分需要密码 / 不在 sudoers / 没有 sudo，并给出修复命令
+- **`ssh_transfer` 的 sudo 下载暂存文件改为 chown 给连接账号**：此前 `$(id -un)` 在 root 脚本里求值为 root，暂存文件 600 root:root 导致随后的 scp 打不开
+- **scp 的 `remote open: Permission denied` 不再被误归因为「账号或口令不正确」**
+
+### 修复
+
+- `buildDetachScript` 提示行里的反引号在远端被当作命令替换执行（会真的创建 `.done` 文件并吃掉提示文本）
+- `sudo -S` 读取 base64 解码后的口令时缺少结尾换行，sudo 1.8.23（CentOS 7）报 `sudo: no password was provided` 并失败
+- RHEL/CentOS bash 的 `SSH_SOURCE_BASHRC` 补丁让每条命令的 stderr 多出 `~/.bashrc` 报错噪声，可能干扰失败诊断
+
+### 文档
+
+- 中英 README 补充上述行为契约，并记录 Windows OpenSSH 客户端不支持 `ControlMaster` / `ControlPersist`（实测报 `getsockname failed: Not a socket`），因此连接无法复用
 
 ## [2.0.0] - 2026-10-25
 

@@ -9,8 +9,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-2.0.0-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-321%20cases-brightgreen.svg)](test)
+[![Version](https://img.shields.io/badge/version-2.1.0-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-490%20cases-brightgreen.svg)](test)
 
 </div>
 
@@ -97,10 +97,24 @@ dsh plugin --profile desktop list
 | --- | --- | --- |
 | `ssh_hosts` | 管理保险库（list / show / add / update / remove） | 「有哪些主机」「改一下 kali 的备注」 |
 | `ssh_run` | 在主机上执行命令，返回 stdout 与 stderr | 「在 kali 上看看磁盘占用」 |
-| `ssh_transfer` | 上传或下载文件（scp） | 「把这个文件传到 kali 的 /tmp」 |
-| `ssh_probe` | 连接自检，返回系统信息 | 「kali 还连得上吗」 |
+| `ssh_transfer` | 上传或下载文件（scp），可选 sudo 读写 | 「把这个文件传到 kali 的 /tmp」 |
+| `ssh_probe` | 连接自检，回读系统与能力信息并写入主机元数据 | 「kali 还连得上吗」 |
+| `ssh_tunnel` | 维护本地端口转发（`ssh -L`） | 「把 kali 的 8787 映射到本地 18787」 |
 
-**在哪里看到效果：** `ssh_run` / `ssh_probe` / `ssh_transfer` 的调用会渲染成**终端卡片**——标题栏是「主机 · 命令」加一个状态点，下方是可滚动的等宽输出区。状态点：蓝=运行中、灰=成功、红=失败（含非零退出码）。
+`ssh_run` 的几条约定：
+
+- **显式 shell 包装。** POSIX 目标默认用 `bash --norc -c '<command>'`：命令固定由 bash 解析一次，不会落到远端登录 shell（fish/zsh）上被改写成另一个意思。`login_shell: true` 改用 `bash -lc`（需要 profile 里定义的 PATH 时）。返回里的 `remoteShell` 会说明这次实际用了什么。
+  `--norc` 不是可有可无的：RHEL/CentOS 的 bash 打了 `SSH_SOURCE_BASHRC` 补丁，SSH 会话里**非交互** bash 也会 source `~/.bashrc`，用户 .bashrc 里一条失败的 source 就会让每条命令的 stderr 多一行噪声，进而干扰失败诊断。
+- **命令数组。** `command_array: ["find", ".", "-name", "*.log"]` 会逐元素引号化，远端 shell 不做分词、通配或变量展开，彻底避开双层 shell 的引号陷阱。
+- **sudo 三态。** `sudo: true` 自动选形态；`sudo: "wrap"` 把整条命令包成 `sudo -n bash -c '...'`；`sudo: "script"` 写临时脚本再以 root 执行——heredoc、管道、后台任务、多行流程都不会在提权边界上变形，脚本执行完即删，口令经 base64 管道喂给 `sudo -S`，两端命令行与远端 `ps` 都看不到；`sudo: "prime"` 只预热缓存，命令里照旧自己写 sudo。口令始终来自保险库。用了任一形态后**不要**在命令里再写 sudo。
+- **错误分类。** 失败时附一行类别标签（连接 / 认证 / sudo / 远端命令 / 输出截断）；sudo 失败还会细分「需要密码 / 不在 sudoers / 没有 sudo」并给出修复命令。
+- **大输出落盘。** 超过上限时响应只保留摘要，完整内容写进保险库目录下的 `outputs/`，并把绝对路径附在结果里。
+
+`ssh_transfer` 在 scp 之上补了三件事：`sudo: true` 读写 root-only 文件（远端临时文件中转 + 自动清理）；`normalize_eol: true` 上传前把 CRLF 规范成 LF（Windows 上写的脚本在远端不会报 `$'\r': 未找到命令`，二进制文件自动跳过）；`mode` / `owner` / `preserve_mode` 设置远端权限与属主。
+
+`ssh_tunnel` 在开隧道**之前**先读远端 `sshd -T` 的转发策略：`AllowTcpForwarding no` 时直接给出「用 `sshd_config` 的 `Match User <user>` 放行 `LocalForwarding`、不要全局改」的可粘贴片段与 `PermitOpen` 说明，而不是等撞上 `administratively prohibited`。它维护隧道生命周期（本地端口占用预检、断线事件、指数退避重连、插件卸载时清理），并返回本地可用地址。
+
+**在哪里看到效果：** `ssh_run` / `ssh_probe` / `ssh_transfer` / `ssh_tunnel` 的调用会渲染成**终端卡片**——标题栏是「主机 · 命令」加一个状态点，下方是可滚动的等宽输出区。状态点：蓝=运行中、灰=成功、红=失败（含非零退出码）。
 
 ### 设置界面
 
@@ -306,13 +320,18 @@ flowchart TB
 - **仅支持 Windows。** 数据密钥由 Windows DPAPI 保护，`SSH_ASKPASS` 辅助程序是 Windows 的 `.cmd`；因此仓库声明 `os: ["win32"]`。没有 Linux/macOS 模式：在那类平台上继续运行只能把密钥退化成明文 `key.json`，所以插件直接拒绝加载。SSH 的目标仍可以是 Linux/Unix 主机——限制的是运行 DSH 的这台机器。
 - **默认 `dpapi`，也支持 `passphrase`**（主口令经 scrypt 派生密钥）。`file` 会把密钥以明文保存，只能显式选择，不是回退路径。
 - **设置界面只支持口令与私钥两种认证。** 工具侧的 `agent` 认证类型可通过 `ssh_hosts add` 设置，但设置界面无法录入或编辑
-- **远端 shell 支持 bash / sh / cmd / powershell。** `sudo` 预置仅对 POSIX shell 生效
+- **远端 shell 支持 bash / sh / cmd / powershell。** sudo 三态仅对 POSIX shell 生效；cmd / powershell 目标上 `sudo: true` 会直接报错而不是静默降级
+- **sudo 的形态由目标状态决定，不是一种风格。** `wrap` 要求 `sudo -n` 本来就通（root 或 NOPASSWD）；需要口令时走 `script`，因此保险库里必须有该账号的 sudo 口令（`sudoPassword`，缺省复用登录口令）。`sudo: true` 的自动选择会参考 `ssh_probe` 最近一次的探测结论
 
 ### 并发
 
 - **同一主机的连接在进程内串行化。** 每次调用都新建 SSH 连接，短时间一批——尤其并发 `scp`
   ——会触发 sshd 的连接数限制，并累积失败认证计数把账户推向锁定。后台任务不进这条队列，
   否则一个长任务会把该主机上其他调用全部堵死
+- **每次调用都新建 SSH 连接，无法复用。** Windows 的 OpenSSH 客户端不支持
+  `ControlMaster` / `ControlPersist`：`-G` 会照常回显这些配置项，但真正建连时报
+  `getsockname failed: Not a socket`。所以每次调用都要重新握手；同一主机的串行化队列正是为此而设。
+  确实需要连接复用，只能改用 WSL 里带 Unix domain socket 的 Linux ssh 客户端
 - **保险库没有跨进程锁。** 两个 DSH 实例（不同 profile 指向同一保险库目录）同时写入时，后者覆盖前者
 - 同一 profile 内多个会话的写入串行化到事件循环，但仍不建议高频并发修改同一主机
 
@@ -330,7 +349,8 @@ Windows OpenSSH 对**已锁定**的账户是直接断开连接，而不是回 `P
 
 ### 输出与超时
 
-- `ssh_run` 单次输出默认上限 200000 字符，超出截断
+- `ssh_run` 单次输出默认上限 200000 字符；超出部分不再只是被砍掉——完整 stdout / stderr 会写进保险库目录下的 `outputs/`，响应里附上绝对路径，摘要与证据都不丢
+- `ssh_run` 的 `command` 作为 `-c` 参数传给远端 shell 时受远端命令行长度限制，超过 64 KiB 会自动改走 stdin（`bash -s`），返回里的 `remoteShell` 会如实反映走了哪条路
 - `/hosts` 里每条命令最多回显 40 行
 - `/hosts` 的命令超时固定 120 秒，不可配置
 - 前台工具调用**没有流式输出**：输出在命令结束后一次性出现。需要边跑边看请用 `run_in_background`，输出进 job 卡片

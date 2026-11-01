@@ -8,6 +8,37 @@ All notable changes to this project are documented here. The format follows
 
 
 
+## [2.1.0] - 2026-11-01
+
+### Added
+
+- **`ssh_tunnel` tool**: maintains local port forwards (`ssh -L`) with `start` / `list` / `stop`. Before opening a tunnel it reads the remote `sshd -T` policy and, when `AllowTcpForwarding no`, hands back a paste-ready per-user snippet (`Match User` + `AllowTcpForwarding local`) plus the `PermitOpen` explanation instead of making the caller hit `administratively prohibited`. Includes local port precheck, drop events, exponential-backoff reconnect, and cleanup on plugin unload. Adds `lib/tunnel.js` and `test/tunnel-unit.mjs` (133 assertions)
+- **`ssh_run`'s `command_array`**: pass program and arguments as an array; each element is quoted so the remote shell performs no word splitting, globbing or variable expansion
+- **`ssh_run`'s `login_shell`**: opt into a login shell (`bash -lc`); the default is the non-login `bash --norc -c`
+- **`ssh_transfer`'s `sudo` / `normalize_eol` / `mode` / `owner` / `preserve_mode`**: move root-only files (remote staging plus cleanup), convert CRLF to LF before upload (binaries skipped), set remote permissions and ownership
+- **`ssh_probe` records host metadata**: sudo capability, sshd forwarding policy, common tools, disk and memory, reused by `ssh_run`'s automatic sudo choice and by `ssh_tunnel`'s precheck; `ssh_hosts show` displays the summary
+- **Error categories and large output on disk**: failures carry a category label (connection / auth / sudo / remote command / truncated); past the cap the full stream is written under `outputs/` in the vault directory and the absolute path is attached
+
+### Changed
+
+- **POSIX targets now use explicit shell wrapping**: `bash --norc -c '<command>'`. The command is parsed exactly once by bash and is no longer reinterpreted by the remote login shell (fish/zsh); `remoteShell` in the result states the actual form. `--norc` suppresses the stderr noise produced when RHEL/CentOS bash sources `~/.bashrc` inside an SSH session
+- **`sudo` went from a single "prime" step to three forms**: `wrap` (`sudo -n bash -c '...'`), `script` (a temporary script executed as root, safe for heredocs, pipelines, background jobs and multi-line flows; the password reaches `sudo -S` through a base64 pipe and is invisible to both command lines and the remote `ps`), and `prime` (the previous behaviour, kept for compatibility). `sudo: true` picks automatically; `sudo_mode` forces one
+- **sudo failure attribution**: distinguishes a needed password, not being in sudoers, and having no sudo, each with its fix
+- **`ssh_transfer`'s sudo download now chowns the staged file to the connection account**: `$(id -un)` used to evaluate to root inside the root script, leaving a 600 root:root staging file that the following scp could not open
+- **scp's `remote open: Permission denied` is no longer misreported as "wrong account or password"**
+
+### Fixed
+
+- The backticks in `buildDetachScript`'s hint line were executed by the remote shell as command substitution (actually creating the `.done` file and eating the hint text)
+- `sudo -S` read the base64-decoded password without a trailing newline, so sudo 1.8.23 (CentOS 7) reported `sudo: no password was provided` and failed
+- The RHEL/CentOS bash `SSH_SOURCE_BASHRC` patch added a `~/.bashrc` error line to the stderr of every command, which could derail failure diagnosis
+
+### Documentation
+
+- Both READMEs describe the contracts above and record that the Windows OpenSSH client does not support `ControlMaster` / `ControlPersist` (observed as `getsockname failed: Not a socket`), so connections cannot be reused
+
+
+
 ## [2.0.0] - 2026-10-25
 
 ### Removed

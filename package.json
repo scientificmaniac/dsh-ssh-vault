@@ -1,6 +1,6 @@
 {
   "name": "dsh-ssh-vault",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
   "description": "Encrypted SSH host vault and model-facing SSH tools for the DeepSeek Harness — Windows only",
   "os": [
@@ -28,8 +28,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node test/platform.mjs && node test/diagnose.mjs && node test/unit.mjs && node test/background.mjs && node test/vault-api.mjs && node test/i18n.mjs && node test/host-apply.mjs && node test/client-smoke.mjs",
+    "test": "node test/platform.mjs && node test/diagnose.mjs && node test/unit.mjs && node test/background.mjs && node test/tunnel-unit.mjs && node test/vault-api.mjs && node test/i18n.mjs && node test/host-apply.mjs && node test/client-smoke.mjs",
     "test:live": "node test/live.mjs",
+    "test:live:centos": "node test/live-centos.mjs",
     "test:self": "node test/selftest.mjs"
   },
   "exports": {

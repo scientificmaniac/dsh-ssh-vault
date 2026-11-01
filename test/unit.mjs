@@ -6,7 +6,7 @@
  *
  * 运行：node test/unit.mjs
  */
-import { buildDetachScript, buildScpArgs, buildSshArgs, buildWaitScript, looksLikeNaturalLanguage, parseExitStatus, renderTerminalBlock, runProcess, sudoPrelude } from '../lib/ssh.js'
+import { buildDetachScript, buildScpArgs, buildSshArgs, buildSudoScriptRunner, buildSudoWrapCommand, buildWaitScript, classifySudoFailure, diagnoseCategory, looksLikeNaturalLanguage, parseExitStatus, parseSudoProbe, quoteArgv, renderTerminalBlock, runProcess, sudoPrelude } from '../lib/ssh.js'
 
 let passed = 0
 const failures = []
@@ -91,11 +91,23 @@ check('powershell 合并 error 流', psDecoded.includes('} 2>&1 | ForEach-Object
 check('powershell 压平 ErrorRecord', psDecoded.includes('[error] '), JSON.stringify(psDecoded.slice(-160)))
 check('powershell 关闭进度条', psDecoded.includes('$ProgressPreference'), JSON.stringify(psDecoded.slice(0, 120)))
 
-// 对照：POSIX 与 cmd 仍走 stdin，不应把脚本塞进参数。
+// POSIX 现在显式包装成 `<shell> -lc '<command>'`：不经远端登录 shell，命令作为**一个**
+// 参数传过去。这解决「主机记录写 bash、手工登录却是 fish/zsh」时命令被另一种 shell 改写。
 const posixArgs = buildSshArgs({
   record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'echo hi\n',
 })
-check('posix 仍用 -s 走 stdin', posixArgs.slice(-2).join(' ') === 'bash -s', posixArgs.slice(-2).join(' '))
+check('posix 显式 --norc -c 包装', posixArgs.slice(-4, -1).join(' ') === 'bash --norc -c', posixArgs.slice(-4).join(' '))
+check('posix 命令作为单个参数传入', posixArgs[posixArgs.length - 1] === "'echo hi\n'", JSON.stringify(posixArgs.slice(-1)))
+const loginArgs = buildSshArgs({
+  record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'echo hi\n', loginShell: true,
+})
+check('loginShell 走 -lc', loginArgs.slice(-3, -1).join(' ') === 'bash -lc', loginArgs.slice(-3).join(' '))
+const trickyArgs = buildSshArgs({
+  record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, remoteCommand: "grep '^\\[login\\]' /var/log/x",
+})
+const wrappedTricky = trickyArgs[trickyArgs.length - 1]
+check('posix 复杂引号被整体包裹', wrappedTricky.startsWith("'") && wrappedTricky.endsWith("'"), wrappedTricky)
+check("posix 复杂引号用 '\\'' 形式转义", wrappedTricky.includes(`'\\''`), wrappedTricky)
 const cmdArgs = buildSshArgs({
   record: { ...passwordRecord, shell: 'cmd' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'dir\n',
 })
@@ -164,6 +176,21 @@ if (spawnable) {
     env: probeEnv, timeoutMs: 0, maxOutputBytes: 1000,
   })
   check('timeoutMs=0 表示不限时', noLimit.timedOut === false && noLimit.stdout === 'QUICK', JSON.stringify(noLimit))
+
+  // 溢出落盘：响应里只有摘要，完整内容必须在磁盘上可查。
+  const { tmpdir } = await import('node:os')
+  const { readFile: readDump, rm: rmDump } = await import('node:fs/promises')
+  const pathMod = await import('node:path')
+  const dumpBase = pathMod.join(tmpdir(), `dsh-unit-${Date.now()}`)
+  const bigOut = await runProcess(process.execPath, ['-e', 'process.stdout.write("X".repeat(50000))'], {
+    env: probeEnv, timeoutMs: 15000, maxOutputBytes: 1000, outputBase: dumpBase,
+  })
+  check('溢出标记 stdoutTruncated', bigOut.stdoutTruncated === true)
+  check('溢出保留上限长度', bigOut.stdout.length === 1000, String(bigOut.stdout.length))
+  check('溢出给出日志路径', typeof bigOut.stdoutPath === 'string' && bigOut.stdoutPath.endsWith('.stdout.log'), String(bigOut.stdoutPath))
+  const dumpText = await readDump(bigOut.stdoutPath, 'utf8')
+  check('溢出日志是完整内容', dumpText.length === 50000, String(dumpText.length))
+  await rmDump(`${dumpBase}.stdout.log`, { force: true })
 }
 
 // —— sudo 预热：口令只进脚本，不进命令行 ——
@@ -176,6 +203,46 @@ const quotedPrelude = sudoPrelude("pa'ss word")
 check('sudo 预热转义单引号与空格', quotedPrelude.includes(`'pa'\\''ss word'`), quotedPrelude)
 const sshArgsForSudo = buildSshArgs({ record: passwordRecord, knownHostsPath, connectTimeoutSec: 10 })
 check('ssh 参数里永远不含口令', !sshArgsForSudo.join(' ').includes('secret'), sshArgsForSudo.join(' '))
+
+// —— 显式 bash 包装与 command_array 引号安全 ——
+const quotedArgv = quoteArgv(['find', '.', '-name', '*.log'])
+check('command_array 每元素单独加引号', quotedArgv === "'find' '.' '-name' '*.log'", quotedArgv)
+let emptyArgvThrew = false
+try { quoteArgv([]) } catch { emptyArgvThrew = true }
+check('command_array 空数组报错', emptyArgvThrew === true)
+let badArgvThrew = false
+try { quoteArgv(['ls', '']) } catch { badArgvThrew = true }
+check('command_array 空元素报错', badArgvThrew === true)
+check('command_array 通配符留在引号内', quoteArgv(['ls', '*.log']).includes("'*.log'"), quoteArgv(['ls', '*.log']))
+
+// —— sudo 三态 ——
+const sudoWrapScript = buildSudoWrapCommand('apt-get update && echo done')
+check('sudo wrap 用 sudo -n bash -c', sudoWrapScript.startsWith('sudo -n bash -c '), sudoWrapScript)
+check('sudo wrap 整体包裹命令', sudoWrapScript.endsWith("'apt-get update && echo done'"), sudoWrapScript)
+const sudoRunner = buildSudoScriptRunner({ command: 'cat > /etc/x <<EOF\nhi\nEOF', password: 'pw', token: 'abc' })
+check('sudo script 走 base64 落地', sudoRunner.includes('base64 -d'), sudoRunner)
+check('sudo script 解码后补换行', sudoRunner.includes('| base64 -d; echo; }'), sudoRunner)
+check('sudo script 临时路径含 token', sudoRunner.includes('/tmp/.dsh-ssh-sudo-abc.sh'), sudoRunner)
+check('sudo script 执行后清理', sudoRunner.includes('rm -f "$DSH_SUDO_TMP"'), sudoRunner)
+check('sudo script 口令不以明文出现', !sudoRunner.includes("'pw'"), sudoRunner)
+check('sudo script 口令以 base64 传入', sudoRunner.includes(Buffer.from('pw').toString('base64')), sudoRunner)
+const sudoRunnerNoPw = buildSudoScriptRunner({ command: 'id', token: 'abc' })
+check('sudo script 无口令时用 -n', sudoRunnerNoPw.includes('sudo -n bash'), sudoRunnerNoPw)
+check('sudo 分类 need-password', classifySudoFailure('sudo: a password is required').kind === 'need-password')
+check('sudo 分类 中文需要密码', classifySudoFailure('sudo: 需要密码').kind === 'need-password')
+check('sudo 分类 not-in-sudoers', classifySudoFailure('user is not in the sudoers file.').kind === 'not-in-sudoers')
+check('sudo 分类 no-sudo', classifySudoFailure('bash: sudo: command not found').kind === 'no-sudo')
+check('sudo 探测解析 nopasswd', parseSudoProbe('junk\n##sudo##nopasswd\n') === 'nopasswd')
+check('sudo 探测解析 password', parseSudoProbe('##sudo##password\n') === 'password')
+check('sudo 探测解析 none', parseSudoProbe('##sudo##none\n') === 'none')
+
+// —— 错误分类 ——
+check('分类 连接层', diagnoseCategory({ exitCode: 255, stderr: 'Connection timed out' }, {}) === 'connection')
+check('分类 超时归连接层', diagnoseCategory({ exitCode: null, timedOut: true, stderr: '' }, {}) === 'connection')
+check('分类 认证', diagnoseCategory({ exitCode: 255, stderr: 'Permission denied (publickey)' }, { authType: 'key' }) === 'auth')
+check('分类 sudo', diagnoseCategory({ exitCode: 1, stderr: 'sudo: a password is required' }, {}) === 'sudo')
+check('分类 远端命令', diagnoseCategory({ exitCode: 2, stderr: '' }, {}) === 'remote')
+check('分类 截断', diagnoseCategory({ exitCode: 0, stderr: '', stdoutTruncated: true }, {}) === 'truncated')
 
 // —— wait_for / detach 远端脚本 ——
 const waitScript = buildWaitScript({ path: '/var/log/kali-upgrade.log', regex: 'Upgrade complete', timeoutMs: 600000, intervalMs: 3000 })

@@ -237,7 +237,7 @@ check('宿主没给 t 时退回 fallbackT', typeof providerWithoutT?.props?.valu
 // —— 对话内卡片：三个 toolview key + commandview ——
 const toolEntries = env.registrations.filter((item) => item.options.name === 'tool.call.toolview')
 const toolKeys = toolEntries.map((item) => item.options.key)
-for (const key of ['ssh_run', 'ssh_probe', 'ssh_transfer']) {
+for (const key of ['ssh_run', 'ssh_probe', 'ssh_transfer', 'ssh_tunnel']) {
   check(`注册 tool.call.toolview:${key}`, toolKeys.includes(key), toolKeys.join(','))
 }
 check('toolview 都带 locale', toolEntries.every((item) => item.options.locale === 'ssh-vault'))

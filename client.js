@@ -775,8 +775,8 @@ window.__ModuleLoader__.load({
 
     // —— SSH 工具的对话内终端视图 ——
     //
-    // 注册点是 `tool.call.toolview`：按**工具名**分发，所以我们只影响自己注册的三个工具，
-    // 不覆盖任何内置 UI（ssh_run / ssh_probe / ssh_transfer 都不在已占用列表里）。
+    // 注册点是 `tool.call.toolview`：按**工具名**分发，所以我们只影响自己注册的四个工具，
+    // 不覆盖任何内置 UI（ssh_run / ssh_probe / ssh_transfer / ssh_tunnel 都不在已占用列表里）。
     // 内置 bash 工具在同一槽位用的是宿主的 TerminalBlock；纯 JS 客户端拿不到宿主包
     // （builtins 只有 ctx / React / host / styles / console），所以这里自绘一个可滚动终端。
 
@@ -831,6 +831,12 @@ window.__ModuleLoader__.load({
     function sshHeadlineOf(call) {
       if (typeof call.args.command === 'string' && call.args.command.trim().length > 0) return call.args.command
       if (call.name === 'ssh_probe') return `ssh_probe ${String(call.args.host ?? '')}`
+      if (call.name === 'ssh_tunnel') {
+        const action = String(call.args.action ?? 'list')
+        const host = typeof call.args.host === 'string' ? ` ${call.args.host}` : ''
+        const forwards = Array.isArray(call.args.forwards) ? ` ${call.args.forwards.join(' ')}` : ''
+        return `ssh_tunnel ${action}${host}${forwards}`
+      }
       if (call.name === 'ssh_transfer') {
         const arrow = call.args.direction === 'upload' ? '→' : '←'
         return `scp ${String(call.args.local ?? '')} ${arrow} ${String(call.args.remote ?? '')}`
@@ -1082,7 +1088,7 @@ window.__ModuleLoader__.load({
         }, withLocale(SshVaultSettings)))
         // SSH 工具的对话内终端：按工具名分发，只占我们自己的三个名字。
         ctx.slots.inject('tool.call.toolview', function* () {
-          for (const key of ['ssh_run', 'ssh_probe', 'ssh_transfer']) {
+          for (const key of ['ssh_run', 'ssh_probe', 'ssh_transfer', 'ssh_tunnel']) {
             yield ctx.slots.register({ name: 'tool.call.toolview', key, ...loc }, withLocale(SshTerminalRow))
           }
         })

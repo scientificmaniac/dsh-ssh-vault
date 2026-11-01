@@ -142,7 +142,9 @@ try {
   const zh = harness('zh')
   apply(zh.ctx, { vaultDir, keyProtection: 'file' })
 
-  check('注册 4 个工具', zh.state.tools.length === 4, String(zh.state.tools.length))
+  check('注册 5 个工具', zh.state.tools.length === 5, String(zh.state.tools.length))
+  const zhToolNames = zh.state.tools.map((tool) => tool.name)
+  check('注册了 ssh_tunnel', zhToolNames.includes('ssh_tunnel'), zhToolNames.join(','))
   check('注册 /hosts 命令', zh.state.commands.length === 1, String(zh.state.commands.length))
 
   // 设置接口必须把请求交给宿主 Connection 的信任栅栏（与 /api 同一套判定）。

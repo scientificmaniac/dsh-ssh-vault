@@ -12,11 +12,32 @@
  */
 
 import { mkdir, readFile } from 'node:fs/promises'
-import { dirname, isAbsolute, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
 import { LOCALE_SETTINGS_NAMESPACE, applyPreference, onLocaleChange, readLocalePreference, t } from './lib/i18n.js'
 import { assertSupportedPlatform } from './lib/platform.js'
-import { MAX_TIMEOUT_MS, buildDetachScript, buildWaitScript, ensureAskpass, looksLikeNaturalLanguage, parseExitStatus, probeCommand, renderTerminalBlock, runRemote, shellKind, transferFile } from './lib/ssh.js'
+import {
+  MAX_TIMEOUT_MS,
+  buildDetachScript,
+  buildSudoProbeCommand,
+  buildWaitScript,
+  ensureAskpass,
+  looksLikeNaturalLanguage,
+  parseExitStatus,
+  parseSudoProbe,
+  probeCommand,
+  renderTerminalBlock,
+  runRemote,
+  shellKind,
+  transferFile,
+} from './lib/ssh.js'
+import {
+  TunnelManager,
+  buildSshdProbeCommand,
+  diagnoseForwarding,
+  parseForward,
+  parseSshdForwarding,
+} from './lib/tunnel.js'
 import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi } from './lib/vault-api.js'
 import { Vault, defaultVaultDir, maskHost, maskUser } from './lib/vault.js'
 
@@ -125,10 +146,21 @@ function describeHost(record, reveal) {
   return `- ${record.alias}  (${endpoint}, ${account}, ${auth}${source})${tags}${note}`
 }
 
+/** 失败类别 → 文案键；渲染时给失败结果加一行分类标签。 */
+const CATEGORY_MESSAGE = {
+  connection: 'err.catConnection',
+  auth: 'err.catAuth',
+  sudo: 'err.catSudo',
+  remote: 'err.catRemote',
+  truncated: 'err.catTruncated',
+}
+
 /**
  * 把一次远程执行的结果整理成模型可见的文本，保持与内置 shell 工具一致的标记风格。
  *
  * 无论是正常结束、超时还是被取消，已收到的输出都会照常呈现——中断不等于失明。
+ * 失败时额外给出「属于哪一层」的分类标签与本次实际使用的远端 shell：前者决定往哪个
+ * 方向修，后者能解释「为什么同一条命令手工跑得好、插件里却报错」。
  *
  * @param result - 执行结果。
  * @returns 面向模型的文本。
@@ -148,9 +180,61 @@ function renderRun(result) {
   if (result.timedOut === true) markers.push(t('marker.timedOut'))
   if (result.aborted === true) markers.push(t('marker.cancelled'))
   if (result.exitCode !== 0 && result.exitCode !== null) markers.push(`[exit code: ${result.exitCode}]`)
+  const categoryKey = typeof result.category === 'string' ? CATEGORY_MESSAGE[result.category] : undefined
+  if (categoryKey !== undefined) markers.push(t(categoryKey))
+  // 输出溢出时给出完整日志路径：响应里只有摘要，证据不丢。
+  const dumpedPath = result.stdoutPath ?? result.stderrPath
+  if (typeof dumpedPath === 'string' && dumpedPath.length > 0) {
+    const bytes = (result.stdout?.length ?? 0) + (result.stderr?.length ?? 0)
+    markers.push(t('err.outputSaved', { path: dumpedPath, bytes: String(bytes) }))
+  }
+  // 只在失败时回显 shell：成功时这行纯属噪音，失败时它常常就是答案本身。
+  if (result.exitCode !== 0 && typeof result.remoteShell === 'string' && result.remoteShell.length > 0) {
+    markers.push(t('err.remoteShell', { shell: result.remoteShell }))
+  }
   if (Array.isArray(result.notes)) markers.push(...result.notes)
   if (markers.length > 0) body += `\n${markers.join('\n')}`
   return body
+}
+
+/**
+ * 组装一次「连通性 + 能力体检」的远端脚本。
+ *
+ * 一段脚本问清三件后续工具要用的事，比每件事各往返一次划算：
+ * - 这台机器是什么（identity/kernel/os/cwd，沿用既有 probeCommand）；
+ * - sudo 是免密、需口令还是没有（决定 ssh_run 的 sudo 形态）；
+ * - sshd 是否允许转发、PermitOpen 限制了什么（决定 ssh_tunnel 能不能建、建之前要改什么）；
+ * - 常用工具与磁盘内存（避免到现场才发现缺依赖）。
+ *
+ * @param shell - 主机记录里的 shell 字段。
+ * @returns 远端脚本。
+ */
+function buildFullProbeScript(shell) {
+  const base = probeCommand(shell)
+  if (shellKind(shell) !== 'posix') return base
+  return [
+    base,
+    buildSudoProbeCommand(),
+    'echo "##tools##$(for c in python3 python node docker systemctl firewall-cmd; do command -v $c >/dev/null 2>&1 && printf \'%s \' $c; done)"',
+    'echo "##disk##$(df -h / 2>/dev/null | tail -1)"',
+    'echo "##mem##$(free -m 2>/dev/null | awk \'NR==2{print $2" MB total, "$7" MB available"}\')"',
+    // sshd 探测必须放在最后：它的脚本以 `exit 0` 收尾，放中间会把后面的命令全部截断。
+    buildSshdProbeCommand(),
+  ].join('\n')
+}
+
+/**
+ * 把 `##key##value` 形式的探测输出拆成键值表。
+ * @param stdout - 远端标准输出。
+ * @returns 键值映射。
+ */
+function parseProbeFacts(stdout) {
+  const facts = {}
+  for (const line of String(stdout ?? '').split('\n')) {
+    const match = /^##(\w+)##(.*)$/.exec(line)
+    if (match !== null) facts[match[1]] = match[2].trim()
+  }
+  return facts
 }
 
 /**
@@ -177,6 +261,27 @@ export function apply(ctx, config = {}) {
     ? config.sshConfigFile
     : undefined
   const revealByDefault = config.maskHostAddress === false
+  // 输出溢出的落地目录：默认放在保险库下的 outputs/，与密文、known_hosts 同处一地，
+  // 不散落到用户的临时目录里。响应里只给摘要与路径，完整内容在这里。
+  const outputDir = typeof config.outputDir === 'string' && config.outputDir.length > 0
+    ? config.outputDir
+    : join(vaultDir, 'outputs')
+  /** 输出目录只需准备一次。 */
+  let outputDirReady
+
+  // —— 本地转发隧道 ——
+  //
+  // 隧道是长生命周期资源，必须挂在插件生命周期上：插件卸载时若留着 ssh -N 子进程，
+  // 本地端口会一直被占用，下次启动就会报「端口已被占用」而查不到占用者。
+  const tunnelManager = new TunnelManager({
+    sshExecutable,
+    onEvent: (event) => {
+      ctx.logger?.info?.(`[ssh-vault] tunnel ${event.type} ${event.id ?? ''} ${event.detail ?? ''}`.trim())
+    },
+  })
+  ctx.effect(() => () => {
+    void tunnelManager.dispose()
+  }, 'ssh-vault: close tunnels')
 
   const vault = new Vault({
     dir: vaultDir,
@@ -331,6 +436,9 @@ export function apply(ctx, config = {}) {
   const connectionFor = async (record, timeoutMs, bindAddress, extraNotes) => {
     const askpass = await prepare()
     const { value: secret, note: secretNote } = await resolveSecret(record)
+    if (outputDirReady === undefined) outputDirReady = mkdir(outputDir, { recursive: true }).catch(() => undefined)
+    await outputDirReady
+    const safeAlias = String(record.alias).replace(/[^\w.-]/g, '_')
     return {
       record,
       secret,
@@ -343,11 +451,53 @@ export function apply(ctx, config = {}) {
       sshConfigFile,
       sshExecutable,
       scpExecutable,
+      outputBase: join(outputDir, `${safeAlias}-${Date.now().toString(36)}`),
       extraNotes: [
         ...(secretNote !== undefined ? [secretNote] : []),
         ...(Array.isArray(extraNotes) ? extraNotes : []),
       ],
     }
+  }
+
+  /**
+   * 决定一次调用该用哪种 sudo 形态。
+   *
+   * 三种形态对应三种真实的远端状态，不是可以互换的风格：
+   * - `wrap`：`sudo -n` 本来就通（root 或 NOPASSWD），包一层就够；
+   * - `script`：需要口令，于是把命令写成临时文件再以 root 执行——引号、heredoc、
+   *   管道、后台、多行流程都在那一个 root 脚本里，不会在提权边界上变形；
+   * - `prime`：只预热一次 sudo 缓存，命令里照旧自己写 sudo（历史行为，保留兼容）。
+   *
+   * 口令永远来自保险库，不接受把口令当参数传进来。
+   *
+   * @param args - 工具参数。
+   * @param record - 主机记录。
+   * @returns sudo 形态与口令。
+   */
+  const resolveSudoPlan = async (args, record) => {
+    const requested = args.sudo
+    if (requested !== true && typeof requested !== 'string') return { mode: 'none' }
+    if (shellKind(record.shell) !== 'posix') {
+      throw new Error(t('sudo.nonPosix', { alias: record.alias, shell: record.shell ?? 'bash' }))
+    }
+    const explicit = typeof requested === 'string' ? requested : args.sudo_mode
+    if (explicit !== undefined && !['auto', 'wrap', 'script', 'prime'].includes(explicit)) {
+      throw new Error(t('err.sudoStringMode'))
+    }
+    const { value: password } = await resolveSudoPassword(record)
+    let mode = explicit ?? 'auto'
+    if (mode === 'auto') {
+      // 优先用上次探测的结论；没有探测就按「有没有可用口令」判断——有口令走脚本模式
+      // 最稳，没有口令只能赌 NOPASSWD。
+      const probed = record.probe?.sudo
+      if (probed === 'nopasswd') mode = 'wrap'
+      else if (password !== undefined && password.length > 0) mode = 'script'
+      else mode = 'wrap'
+    }
+    if ((mode === 'script' || mode === 'prime') && (typeof password !== 'string' || password.length === 0)) {
+      throw new Error(t('sudo.needPassword', { alias: record.alias }))
+    }
+    return { mode, password }
   }
 
   /** 把调用方给的超时收敛到合法范围。 */
@@ -505,6 +655,11 @@ export function apply(ctx, config = {}) {
           ...(record.bindAddress ? [`bindAddress: ${record.bindAddress}`] : []),
           ...(record.description ? [`description: ${record.description}`] : []),
           ...(Array.isArray(record.tags) && record.tags.length > 0 ? [`tags: ${record.tags.join(', ')}`] : []),
+          ...(record.probe !== undefined
+            ? [`probe: ${record.probe.at ?? '(unknown)'} — sudo ${record.probe.sudo ?? 'unknown'}, `
+              + `forwarding ${record.probe.forwarding?.allowTcpForwarding ?? 'unknown'}, `
+              + `tools ${Array.isArray(record.probe.tools) && record.probe.tools.length > 0 ? record.probe.tools.join(' ') : 'none'}`]
+            : []),
           `updatedAt: ${record.updatedAt ?? '(unknown)'}`,
         ]
         return lines.join('\n')
@@ -605,7 +760,15 @@ export function apply(ctx, config = {}) {
         },
         command: {
           type: 'string',
-          description: 'Shell command to run on the remote host, written for that host\'s shell.',
+          description: 'Shell command to run on the remote host, written for that host\'s shell. Omit when command_array is given.',
+        },
+        command_array: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Program and arguments as separate strings, e.g. ["find", ".", "-name", "*.log"]. Every element is quoted '
+            + 'individually, so the remote shell performs no word splitting, globbing or variable expansion on any of them — use this '
+            + 'when a command contains quotes, brackets, dollar signs or globs that would otherwise be rewritten by the extra shell layer. '
+            + 'Mutually exclusive with command.',
         },
         run_in_background: {
           type: 'boolean',
@@ -614,16 +777,34 @@ export function apply(ctx, config = {}) {
             + 'long scans — so an interrupted call cannot lose the result. No timeout applies.',
         },
         sudo: {
-          type: 'boolean',
-          description: 'Prime the remote sudo credential cache with the password stored in the vault before running the command, '
-            + 'so the command can use plain `sudo ...`. The password then never enters this conversation, the command text, '
-            + 'the local or remote command line, or the remote process list. Needs a stored password on the host record '
-            + '(sudoPassword, or the login password). POSIX shells only.',
+          description: 'Raise the command to root. true selects the best form automatically; a string picks it explicitly: '
+            + '"wrap" runs the whole command as sudo -n bash -lc \'...\' (needs passwordless sudo or root), "script" writes the command '
+            + 'to a temporary script and runs it with sudo, which is the safe choice for heredocs, pipelines, background jobs and '
+            + 'multi-line root flows, and "prime" only pre-warms the sudo cache while the command still writes its own sudo. '
+            + 'The password always comes from the vault (stored sudoPassword, falling back to the login password) and never enters '
+            + 'the conversation, the command text, either command line, or the remote process list. POSIX shells only. '
+            + 'When elevated this way, do NOT write sudo inside the command itself — it would become sudo sudo.',
+          oneOf: [
+            { type: 'boolean' },
+            { type: 'string', enum: ['auto', 'wrap', 'script', 'prime'] },
+          ],
+        },
+        sudo_mode: {
+          type: 'string',
+          enum: ['auto', 'wrap', 'script', 'prime'],
+          description: 'Force a sudo form when sudo is true. auto resolves from the host\'s last probe (nopasswd → wrap, '
+            + 'otherwise script when a vault password exists).',
         },
         bindAddress: {
           type: 'string',
           description: 'Local address to connect from for this call, overriding the host record. Use it when a rule change '
             + 'may cut the default management path.',
+        },
+        login_shell: {
+          type: 'boolean',
+          description: 'Run the command through a login shell (bash -lc) instead of a plain one (bash -c). Login shells read '
+            + '/etc/profile and your profile files, which is what you want when the PATH you need is defined there; plain shells are '
+            + 'the default because profile scripts can emit their own noise into stderr and turn a clean command into a confusing one.',
         },
         timeoutMs: {
           type: 'number',
@@ -666,8 +847,17 @@ export function apply(ctx, config = {}) {
     },
     execute: async (args, exec) => {
       const wantsWait = args.wait_for !== undefined && args.wait_for !== null
-      if (!wantsWait && (typeof args.command !== 'string' || args.command.trim().length === 0)) {
-        throw new Error('command must be a non-empty string, unless wait_for is given.')
+      const commandArray = Array.isArray(args.command_array) && args.command_array.length > 0 ? args.command_array : undefined
+      const commandText = typeof args.command === 'string' && args.command.trim().length > 0 ? args.command : undefined
+      if (wantsWait === false && commandArray === undefined && commandText === undefined) {
+        throw new Error('command (or command_array) must be a non-empty value, unless wait_for is given.')
+      }
+      if (commandArray !== undefined && commandText !== undefined) {
+        throw new Error('Pass either command or command_array, not both.')
+      }
+      // wait_for 与 detach 都会重写远端脚本，不接受数组形态。
+      if ((wantsWait === true || args.detach === true) && commandText === undefined) {
+        throw new Error('wait_for and detach need a command string, not command_array.')
       }
       const record = await requireHost(args.host)
       const notes = []
@@ -683,21 +873,10 @@ export function apply(ctx, config = {}) {
         notes.push(t('note.accountLockRisk'))
       }
 
-      let sudoPassword
-      if (args.sudo === true) {
-        if (shellKind(record.shell) !== 'posix') {
-          throw new Error(t('err.noSudoOnWindows', { alias: record.alias, shell: record.shell }))
-        }
-        const resolvedSudo = await resolveSudoPassword(record)
-        sudoPassword = resolvedSudo.value
-        if (resolvedSudo.note !== undefined) notes.push(resolvedSudo.note)
-        if (typeof sudoPassword !== 'string' || sudoPassword.length === 0) {
-          throw new Error(t('err.noSudoPassword', { alias: record.alias }))
-        }
-      }
+      const sudoPlan = await resolveSudoPlan(args, record)
 
       // 等待条件与远端脱离都只是「换一段远端脚本」，其余流程完全一致。
-      let command = args.command
+      let command = commandText
       let callTimeoutMs = normalizeTimeout(args.timeoutMs)
       if (wantsWait) {
         const waitTimeoutMs = Number.isFinite(args.wait_for.timeoutMs) ? args.wait_for.timeoutMs : 600000
@@ -724,7 +903,14 @@ export function apply(ctx, config = {}) {
         const connection = await connectionFor(record, 0, args.bindAddress, notes)
         let jobId
         try {
-          jobId = registerSshJob(registry, { ...connection, command, sudoPassword }, { owner: exec.agent?.id })
+          jobId = registerSshJob(registry, {
+            ...connection,
+            command,
+            commandArray,
+            sudoMode: sudoPlan.mode,
+            sudoPassword: sudoPlan.password,
+            loginShell: args.login_shell === true,
+          }, { owner: exec.agent?.id })
         } catch (error) {
           throw new Error(t('err.backgroundRegister', {
             message: error instanceof Error ? error.message : String(error),
@@ -734,7 +920,14 @@ export function apply(ctx, config = {}) {
           + `The command keeps running on ${record.alias}. Read newer output with job_output and stop it with job_kill.`
       }
       const connection = await connectionFor(record, callTimeoutMs, args.bindAddress, notes)
-      return runForeground({ ...connection, command, sudoPassword }, exec.signal)
+      return runForeground({
+        ...connection,
+        command,
+        commandArray,
+        sudoMode: sudoPlan.mode,
+        sudoPassword: sudoPlan.password,
+        loginShell: args.login_shell === true,
+      }, exec.signal)
     },
   })))
 
@@ -782,11 +975,41 @@ export function apply(ctx, config = {}) {
           type: 'number',
           description: `Timeout in milliseconds for the whole transfer. Defaults to ${defaultTimeoutMs}.`,
         },
+        sudo: {
+          type: 'boolean',
+          description: 'Move a root-only file. Download: the remote side copies the file as root into a temporary path, hands it to '
+            + 'your account, and deletes it afterwards. Upload: the file goes to /tmp first and is then installed into place as root '
+            + '(which also applies mode/owner). Needs password-capable sudo for password-protected sudo, and a POSIX remote shell.',
+        },
+        normalize_eol: {
+          type: 'boolean',
+          description: 'On upload, convert CRLF line endings to LF before sending. Use this for scripts written on Windows — a stray '
+            + '\\r makes the remote shell report "$\'\\r\': command not found" on a line that looks empty. Binary files are detected '
+            + 'and left untouched.',
+        },
+        mode: {
+          type: 'string',
+          description: 'Octal permissions to apply to the remote file after upload, e.g. "640" or "0755".',
+        },
+        owner: {
+          type: 'string',
+          description: 'Owner to set on the remote file, as user or user:group (e.g. "sentinel:sentinel"). Needs privilege — combine '
+            + 'with sudo for files the login account cannot chown.',
+        },
+        preserve_mode: {
+          type: 'boolean',
+          description: 'On upload, apply the local file\'s permission bits to the remote file. Write bits are stripped first, because '
+            + 'a Windows 666 would otherwise become a world-writable file on Linux.',
+        },
       },
       required: ['host', 'direction', 'local', 'remote'],
     },
     execute: async (args, exec) => {
       const record = await requireHost(args.host)
+      const wantsSudo = args.sudo === true
+      if (wantsSudo && shellKind(record.shell) !== 'posix') {
+        throw new Error(t('sudo.nonPosix', { alias: record.alias, shell: record.shell ?? 'bash' }))
+      }
       const cwd = exec.agent?.session?.header?.cwd
       const local = isAbsolute(args.local) || cwd === undefined ? args.local : resolve(cwd, args.local)
       // 下载时自动创建本地父目录。scp 自己不会建，原先用户必须先手工 mkdir 一次，
@@ -795,12 +1018,19 @@ export function apply(ctx, config = {}) {
         await mkdir(dirname(local), { recursive: true })
       }
       const connection = await connectionFor(record, normalizeTimeout(args.timeoutMs), args.bindAddress)
+      const sudoResolved = wantsSudo ? await resolveSudoPassword(record) : { value: undefined }
       const result = await withHostLock(record.alias, () => transferFile({
         ...connection,
         direction: args.direction,
         local,
         remote: args.remote,
         recursive: args.recursive === true,
+        sudo: wantsSudo,
+        sudoPassword: sudoResolved.value,
+        normalizeEol: args.normalize_eol === true,
+        mode: args.mode,
+        owner: args.owner,
+        preserveMode: args.preserve_mode === true,
         signal: exec.signal,
       }))
       if (result.aborted) {
@@ -812,7 +1042,9 @@ export function apply(ctx, config = {}) {
         : `Transfer to ${record.alias} failed`
       const detail = result.stderr?.trim()
       const notes = Array.isArray(result.notes) ? result.notes : []
-      return [head, detail, ...notes].filter((line) => typeof line === 'string' && line.length > 0).join('\n')
+      const categoryKey = typeof result.category === 'string' ? CATEGORY_MESSAGE[result.category] : undefined
+      return [head, detail, ...(categoryKey === undefined ? [] : [t(categoryKey)]), ...notes]
+        .filter((line) => typeof line === 'string' && line.length > 0).join('\n')
         + (result.exitCode === 0 ? '' : `\n[exit code: ${result.exitCode}]`)
     },
   })))
@@ -824,7 +1056,9 @@ export function apply(ctx, config = {}) {
     presentResult: (_args, result) => terminalResult(result),
     description: 'Check that a saved SSH host is reachable and report what the remote system is. '
       + 'It adapts to the host record\'s shell, so it works for both Linux and Windows targets. '
-      + 'Use it before the first real command on a host, or when a command fails in a way that suggests connectivity or authentication problems.',
+      + 'Use it before the first real command on a host, or when a command fails in a way that suggests connectivity or authentication problems. '
+      + 'On POSIX targets it also records sudo capability, the sshd forwarding policy, common tools and disk/memory into the host '
+      + 'metadata, and later ssh_run and ssh_tunnel calls reuse that instead of probing again.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -847,7 +1081,11 @@ export function apply(ctx, config = {}) {
     execute: async (args, exec) => {
       const record = await requireHost(args.host)
       const connection = await connectionFor(record, normalizeTimeout(args.timeoutMs), args.bindAddress)
-      const result = await withHostLock(record.alias, () => runRemote({ ...connection, command: probeCommand(record.shell), signal: exec.signal }))
+      const result = await withHostLock(record.alias, () => runRemote({
+        ...connection,
+        command: buildFullProbeScript(record.shell),
+        signal: exec.signal,
+      }))
       if (result.aborted) throw new Error(t('err.probeCancelled', { output: renderRun(result) }))
       const reachable = result.exitCode === 0
       const endpoint = revealByDefault ? `${record.host}:${record.port}` : `${maskHost(record.host)}:${record.port}`
@@ -855,14 +1093,189 @@ export function apply(ctx, config = {}) {
       const header = reachable
         ? `Connected to ${record.alias} (${endpoint}, ${account}, ${record.auth?.type ?? 'agent'}, shell ${record.shell ?? 'bash'}; vault key protection: ${await vaultKeyMode(vault)})`
         : `Could not verify ${record.alias}`
-      const facts = (result.stdout ?? '')
-        .split('\n')
-        .map((line) => line.replace(/^##(\w+)##\s*/, (_m, key) => `${key}: `))
-        .map((line) => line.replace(/^(\w+):\s*$/, ''))
-        .filter((line) => line.trim().length > 0)
-      return reachable
-        ? [header, ...facts].join('\n')
-        : [header, renderRun(result)].join('\n')
+      if (reachable !== true) return [header, renderRun(result)].join('\n')
+
+      const facts = parseProbeFacts(result.stdout)
+      const sudo = parseSudoProbe(result.stdout)
+      const posix = shellKind(record.shell) === 'posix'
+      const forwarding = posix
+        ? parseSshdForwarding(result.stdout ?? '')
+        : { allowTcpForwarding: 'unknown', permitOpen: [], source: 'unknown' }
+      const lines = Object.entries(facts)
+        .filter(([key]) => !['sudo', 'allowtcpforwarding', 'permitopen', 'gatewayports'].includes(key))
+        .map(([key, value]) => `${key}: ${value}`)
+        .filter((line) => line.trim().length > 3)
+      const extra = []
+      if (sudo === 'nopasswd') extra.push(`sudo: ${t('sudo.probeNopasswd')}`)
+      else if (sudo === 'password') extra.push(`sudo: ${t('sudo.probePassword')}`)
+      else if (sudo === 'none') extra.push(`sudo: ${t('sudo.probeNone')}`)
+      if (forwarding.allowTcpForwarding !== 'unknown') {
+        const allowed = ['yes', 'all', 'local'].includes(forwarding.allowTcpForwarding)
+        const permit = Array.isArray(forwarding.permitOpen) && forwarding.permitOpen.length > 0
+          && !(forwarding.permitOpen.length === 1 && forwarding.permitOpen[0] === 'any')
+          ? `, permitopen=${forwarding.permitOpen.join(',')}`
+          : ''
+        extra.push(`forwarding: ${allowed ? t('probe.forwardingOn') : t('probe.forwardingOff')} `
+          + `(allowtcpforwarding=${forwarding.allowTcpForwarding}${permit})`)
+      } else if (posix) {
+        extra.push(t('probe.sshdUnavailable'))
+      }
+      // 写回主机元数据：ssh_run 的 sudo 自动模式与 ssh_tunnel 的预检都读这份结论，
+      // 省掉每次调用前的重复探测。
+      await vault.patch(record.alias, {
+        probe: {
+          at: new Date().toISOString(),
+          os: facts.os,
+          kernel: facts.kernel,
+          shell: record.shell ?? 'bash',
+          sudo,
+          forwarding: {
+            allowTcpForwarding: forwarding.allowTcpForwarding,
+            permitOpen: forwarding.permitOpen,
+            source: forwarding.source,
+          },
+          tools: String(facts.tools ?? '').split(/\s+/).filter((item) => item.length > 0),
+          disk: facts.disk,
+          mem: facts.mem,
+        },
+      })
+      return [header, ...lines, ...extra, t('probe.metaSaved', { alias: record.alias })].join('\n')
+    },
+  })))
+
+  ctx.effect(() => ctx.tools.register(textTool({
+    name: 'ssh_tunnel',
+    terminal: true,
+    presentCall: (args) => terminalCall(`ssh_tunnel ${args.action}${typeof args.host === 'string' ? ` ${args.host}` : ''}`, args.host),
+    presentResult: (_args, result) => terminalResult(result),
+    description: 'Maintain local port-forwarding tunnels (ssh -L) to a saved SSH host, so a service that only listens on the '
+      + 'remote loopback becomes reachable at a local URL. '
+      + 'action=start opens one or more forwards and returns the local URLs; action=list shows running tunnels with their status; '
+      + 'action=stop closes one by id. Before opening, it reads the remote sshd policy and refuses early with the exact fix '
+      + 'when AllowTcpForwarding or PermitOpen would reject the forward, instead of surfacing an administratively prohibited error. '
+      + 'Tunnels are tied to the plugin lifetime and are closed when it unloads.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['start', 'list', 'stop'],
+          description: 'start opens forwards; list reports running tunnels; stop closes the tunnel with the given id.',
+        },
+        host: {
+          type: 'string',
+          description: 'Alias of a host saved in the SSH vault. Required for start.',
+        },
+        forwards: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Local forwards as "LOCALPORT:REMOTEHOST:REMOTEPORT" or "LOCALHOST:LOCALPORT:REMOTEHOST:REMOTEPORT", '
+            + 'e.g. ["18787:127.0.0.1:8787", "18443:127.0.0.1:8443"]. Remote host/port are resolved from the remote side.',
+        },
+        id: {
+          type: 'string',
+          description: 'Tunnel id returned by start, required for stop.',
+        },
+        bindAddress: {
+          type: 'string',
+          description: 'Local address to connect from for this tunnel, overriding the host record.',
+        },
+        timeoutMs: {
+          type: 'number',
+          description: `Timeout in milliseconds for the sshd precheck. Defaults to ${defaultTimeoutMs}.`,
+        },
+      },
+      required: ['action'],
+    },
+    execute: async (args, exec) => {
+      const action = typeof args.action === 'string' ? args.action : 'list'
+      if (action === 'list') {
+        const tunnels = tunnelManager.list()
+        if (tunnels.length === 0) return t('tunnel.none')
+        return tunnels.map((item) => {
+          const urls = item.localUrls.length > 0 ? `  ${item.localUrls.join(' ')}` : ''
+          const pid = item.pid !== null ? `  pid=${item.pid}` : ''
+          const error = typeof item.lastError === 'string' && item.lastError.length > 0 ? `\n  ${item.lastError}` : ''
+          return `- ${item.id}  [${item.status}]  ${item.label}  ${item.forwards.join(', ')}${pid}${urls}${error}`
+        }).join('\n')
+      }
+      if (action === 'stop') {
+        if (typeof args.id !== 'string' || args.id.trim().length === 0) {
+          throw new Error('id is required when action=stop.')
+        }
+        const result = await tunnelManager.stop({ id: args.id.trim() })
+        return result.stopped === true
+          ? t('tunnel.stopped', { id: args.id.trim() })
+          : `${args.id} — not found. Use action=list to see running tunnel ids.`
+      }
+
+      const record = await requireHost(args.host)
+      const forwards = Array.isArray(args.forwards)
+        ? args.forwards
+        : (typeof args.forwards === 'string' && args.forwards.length > 0 ? [args.forwards] : [])
+      if (forwards.length === 0) {
+        throw new Error('forwards is required when action=start, e.g. ["18787:127.0.0.1:8787"].')
+      }
+      const notes = []
+      const connection = await connectionFor(record, normalizeTimeout(args.timeoutMs), args.bindAddress)
+
+      // 先读 sshd 的转发策略。AllowTcpForwarding no 时现在就把「改什么、怎么改」说清楚，
+      // 而不是等 ssh 打出 administratively prohibited 再让模型猜。
+      if (shellKind(record.shell) === 'posix') {
+        const probe = await withHostLock(record.alias, () => runRemote({
+          ...connection,
+          command: buildSshdProbeCommand(),
+          signal: exec.signal,
+        }))
+        if (probe.exitCode === 0 && typeof probe.stdout === 'string' && probe.stdout.trim().length > 0) {
+          const forwarding = parseSshdForwarding(probe.stdout)
+          const advice = diagnoseForwarding({ ...forwarding, user: record.username })
+          if (forwarding.allowTcpForwarding === 'no' || forwarding.allowTcpForwarding === 'remote') {
+            // 只给一份修复指引：标题说明结论，advice 给出可粘贴的 Match User 片段与 PermitOpen 说明。
+            return [t('probe.forwardingOff'), ...advice].join('\n')
+          }
+          notes.push(...advice)
+          await vault.patch(record.alias, {
+            probe: {
+              ...(record.probe ?? {}),
+              at: new Date().toISOString(),
+              forwarding: {
+                allowTcpForwarding: forwarding.allowTcpForwarding,
+                permitOpen: forwarding.permitOpen,
+                source: forwarding.source,
+              },
+            },
+          })
+        } else {
+          notes.push(t('tunnel.probeUnavailable'))
+        }
+      }
+
+      let started
+      try {
+        started = await tunnelManager.start({
+          record,
+          secret: connection.secret,
+          askpassPath: connection.askpassPath,
+          knownHostsPath: connection.knownHostsPath,
+          connectTimeoutSec,
+          sshConfigFile,
+          bindAddress: connection.bindAddress,
+          forwards,
+          label: record.alias,
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        // ssd 拒绝转发时 ssh 只给一行 administratively prohibited；把它和「该改哪里」绑在一起。
+        const extra = /administratively prohibited/i.test(message) ? [t('tunnel.adminProhibited')] : []
+        return [message, ...extra, ...notes].join('\n')
+      }
+      return [
+        t('tunnel.started', { id: started.id, summary: started.forwards.join(', ') }),
+        ...started.localUrls.map((url) => `  ${url}`),
+        ...notes,
+      ].join('\n')
     },
   })))
 
