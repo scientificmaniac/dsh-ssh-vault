@@ -6,7 +6,7 @@
  *
  * 运行：node test/unit.mjs
  */
-import { buildDetachScript, buildScpArgs, buildSshArgs, buildSudoScriptRunner, buildSudoWrapCommand, buildWaitScript, classifySudoFailure, diagnoseCategory, looksLikeNaturalLanguage, parseExitStatus, parseShellList, parseSudoProbe, pickShell, primaryShell, quoteArgv, renderTerminalBlock, runProcess, shellKind, sudoPrelude } from '../lib/ssh.js'
+import { buildDetachScript, buildScpArgs, buildSshArgs, buildSudoScriptRunner, buildSudoWrapCommand, buildWaitScript, classifySudoFailure, diagnose, diagnoseCategory, looksLikeNaturalLanguage, normalizeExitCode, parseExitStatus, parseShellList, parseSudoProbe, pickShell, primaryShell, quoteArgv, renderTerminalBlock, runProcess, shellKind, sudoPrelude, withContentsPath, withWorkdir, workdirPrefix } from '../lib/ssh.js'
 
 let passed = 0
 const failures = []
@@ -202,21 +202,71 @@ if (spawnable) {
   })
   check('timeoutMs=0 表示不限时', noLimit.timedOut === false && noLimit.stdout === 'QUICK', JSON.stringify(noLimit))
 
+  // Windows 的 DWORD 退出码：process.exit(-1) 在 Node 里显示为 4294967295。
+  const negative = await runProcess(process.execPath, ['-e', 'process.exit(-1)'], {
+    env: probeEnv, timeoutMs: 15000, maxOutputBytes: 1000,
+  })
+  check('无符号 4294967295 退出码还原为 -1', negative.exitCode === -1, String(negative.exitCode))
+
   // 溢出落盘：响应里只有摘要，完整内容必须在磁盘上可查。
   const { tmpdir } = await import('node:os')
   const { readFile: readDump, rm: rmDump } = await import('node:fs/promises')
   const pathMod = await import('node:path')
   const dumpBase = pathMod.join(tmpdir(), `dsh-unit-${Date.now()}`)
-  const bigOut = await runProcess(process.execPath, ['-e', 'process.stdout.write("X".repeat(50000))'], {
+  const bigOut = await runProcess(process.execPath, ['-e', 'process.stdout.write("H".repeat(40000) + "T".repeat(10000))'], {
     env: probeEnv, timeoutMs: 15000, maxOutputBytes: 1000, outputBase: dumpBase,
   })
   check('溢出标记 stdoutTruncated', bigOut.stdoutTruncated === true)
-  check('溢出保留上限长度', bigOut.stdout.length === 1000, String(bigOut.stdout.length))
+  check('溢出保留开头一半', bigOut.stdout.startsWith('H'.repeat(500)), bigOut.stdout.slice(0, 20))
+  check('溢出保留结尾一半', bigOut.stdout.endsWith('T'.repeat(500)), bigOut.stdout.slice(-20))
+  check('溢出正文标出省略字符数', bigOut.stdout.includes('49000 characters omitted'), bigOut.stdout.slice(0, 200))
+  check('溢出给出总数与省略数', bigOut.stdoutTotal === 50000 && bigOut.stdoutOmitted === 49000,
+    `${bigOut.stdoutTotal}/${bigOut.stdoutOmitted}`)
   check('溢出给出日志路径', typeof bigOut.stdoutPath === 'string' && bigOut.stdoutPath.endsWith('.stdout.log'), String(bigOut.stdoutPath))
   const dumpText = await readDump(bigOut.stdoutPath, 'utf8')
   check('溢出日志是完整内容', dumpText.length === 50000, String(dumpText.length))
   await rmDump(`${dumpBase}.stdout.log`, { force: true })
 }
+
+// —— 退出码归一化：Windows 的 DWORD 会显示成 4294967295，实际就是 -1 ——
+check('4294967295 归一化为 -1', normalizeExitCode(4294967295) === -1, String(normalizeExitCode(4294967295)))
+check('0/1/255 保持原样', normalizeExitCode(0) === 0 && normalizeExitCode(1) === 1 && normalizeExitCode(255) === 255)
+check('null 退出码保持 null', normalizeExitCode(null) === null, String(normalizeExitCode(null)))
+check('负退出码归入连接层', diagnoseCategory({ exitCode: -1, stderr: 'Connection to 192.0.2.10 closed by remote host.' }, {}) === 'connection')
+const sessionKilledNotes = diagnose(
+  { exitCode: -1, stderr: 'Connection to 192.0.2.10 closed by remote host.' },
+  { port: 22 },
+)
+check('负退出码提示「可能终止了自身 SSH 会话」',
+  sessionKilledNotes.some((note) => note.includes('自己的 SSH 会话') && note.includes('4294967295')),
+  JSON.stringify(sessionKilledNotes))
+check('超时中断不误报会话自毁',
+  !diagnose({ exitCode: -1, timedOut: true, stderr: '' }, { ms: 1000 }).some((note) => note.includes('自己的 SSH 会话')),
+  JSON.stringify(diagnose({ exitCode: -1, timedOut: true, stderr: '' }, { ms: 1000 })))
+
+// —— workdir：三种 shell 各自的前缀，且都带失败即退出 ——
+const posixWorkdir = workdirPrefix('bash', '/var/log')
+check('workdir POSIX 用 cd + 单引号', posixWorkdir.startsWith("cd '/var/log' || {"), posixWorkdir)
+check('workdir POSIX 失败即 exit 1', posixWorkdir.includes('exit 1'), posixWorkdir)
+check('workdir POSIX 转义单引号', workdirPrefix('bash', "/tmp/it's").includes("'/tmp/it'\\''s'"), workdirPrefix('bash', "/tmp/it's"))
+const psWorkdir = workdirPrefix('powershell', "C:\\it's")
+check('workdir PowerShell 用 Set-Location -LiteralPath', psWorkdir.startsWith('Set-Location -LiteralPath '), psWorkdir)
+check('workdir PowerShell 单引号双写', psWorkdir.includes("'C:\\it''s'"), psWorkdir)
+check('workdir PowerShell 失败即停', psWorkdir.includes('-ErrorAction Stop'), psWorkdir)
+let cmdWorkdirError
+try { workdirPrefix('cmd', 'C:\\Program Files') } catch (error) { cmdWorkdirError = error }
+check('workdir cmd 明确拒绝并提示改用 PowerShell',
+  cmdWorkdirError instanceof Error && /workdir/.test(cmdWorkdirError.message) && /PowerShell/.test(cmdWorkdirError.message),
+  cmdWorkdirError === undefined ? '没有抛错' : cmdWorkdirError.message)
+check('workdir 空值不加前缀', withWorkdir('id -un', 'bash', '   ') === 'id -un')
+check('workdir 前缀拼在命令前', withWorkdir('pwd', 'bash', '/tmp') === `${workdirPrefix('bash', '/tmp')}pwd`)
+
+// —— 目录传输：源路径改成「目录内容」 ——
+check('contents POSIX 目录', withContentsPath('/root/shots') === '/root/shots/.', withContentsPath('/root/shots'))
+check('contents POSIX 结尾斜杠', withContentsPath('/root/shots/') === '/root/shots/.', withContentsPath('/root/shots/'))
+check('contents 已是 /. 不重复', withContentsPath('/root/shots/.') === '/root/shots/.', withContentsPath('/root/shots/.'))
+check('contents Windows 路径', withContentsPath('C:\\work\\code') === 'C:\\work\\code\\.', withContentsPath('C:\\work\\code'))
+check('contents UNC 路径', withContentsPath('\\\\server\\share\\code') === '\\\\server\\share\\code\\.', withContentsPath('\\\\server\\share\\code'))
 
 // —— sudo 预热：口令只进脚本，不进命令行 ——
 const prelude = sudoPrelude('example-pw')
@@ -295,6 +345,7 @@ check('detach 告知存活查询方式', detachScript.includes('ALIVE'), detachS
   check('取出零退出码', ok.exitCode === 0, JSON.stringify(ok))
   check('正文不含状态标记', ok.body === 'hello\nworld', JSON.stringify(ok.body))
   check('取出非零退出码', parseExitStatus('boom\n[exit code: 255]').exitCode === 255)
+  check('取出负退出码', parseExitStatus('boom\n[exit code: -1]').exitCode === -1, JSON.stringify(parseExitStatus('boom\n[exit code: -1]')))
 
   // 我们的渲染在退出码之后还会跟诊断建议，所以匹配不能要求它位于全文末尾——
   // 这与内置 shell 工具的实现有意不同。

@@ -5,6 +5,24 @@
 本文件记录所有值得注意的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.2.0] - 2026-11-07
+
+### 新增
+
+- **`ssh_run` 的 `workdir`**：在远端目录里执行命令（POSIX 与 PowerShell 目标）。`cd` 或 `Set-Location` 并进同一段脚本；用 `sudo` 时先提权再进入目录，root-only 目录也能进。`cd` 失败会直接终止命令，不会悄悄落到登录目录里执行。cmd 目标会明确拒绝：Windows sshd 会把命令再包一层 `cmd.exe /c "..."`，带引号的 `cd` 会被拆开。
+- **`ssh_transfer` 的 `flatten`**（默认 `true`）：目录复制按**内容**语义——把源目录的内容放进目标目录，目标已存在就合并。上传 `src/` 到已存在的 `/root/app` 现在落在 `/root/app/*` 而不是 `/root/app/src/*`；下载同理，不用再 `cp -f src/* . && rm -rf src` 收拾。传 `flatten: false` 保留 scp 原本的嵌套语义。
+- **会话自伤诊断**：命令杀死自己的 SSH 会话（例如 `pkill -f` 的模式串匹配到承载命令的 shell）时不再只留一个费解的数字。负的本地退出码渲染为 `[exit code: -1]` 而不是 `[exit code: 4294967295]`，并标明原始值 `0xFFFFFFFF`、归入连接层；「无输出」的情况另有专门说明与 `pkill -x` / 改用脚本文件两条改法。命令里出现 `pkill -f` / `killall -f` 时，执行前还会先提醒一次。
+- `test/live-tools.mjs`：面向模型工具（`ssh_run` / `ssh_transfer`）的真机回归，直接执行真实的工具定义；`npm run test:live:tools`。
+
+### 变更
+
+- **截断改为保留头尾**：内存里的摘录一半给开头、一半给结尾，正文中间标出省略了多少字符；完整内容仍写进 `outputs/` 并附绝对路径。落盘说明里的单位从「字节」改为「字符」。
+- **`flatten` 与 `recursive` 不匹配时明确报错**，不再静默地只传一个文件。
+
+### 修复
+
+- **Windows 退出码按无符号显示**：远端 `-1` 会显示成 `4294967295`。现在统一归一化为有符号 32 位；终端卡片的状态解析也接受负退出码。
+
 ## [2.1.1] - 2026-11-01
 
 ### 修复

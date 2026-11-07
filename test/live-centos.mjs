@@ -8,6 +8,7 @@
  *
  * 运行（需先准备靶场，步骤见下方 TEST_USER_PASS 注释）：
  *   $env:DSH_CENTOS_TEST_PASS='<临时测试账号口令>'
+ *   $env:DSH_CENTOS_ALIAS='centos'   # 可选：默认 centos，可指向同构的 CentOS 靶机
  *   node test/live-centos.mjs
  *
  * 覆盖范围：
@@ -28,7 +29,7 @@
  * - 无论成功还是异常，结束时都清理远端 /tmp/dsh-* 临时文件与本地临时目录。
  * - 失败项一律打印 exit code、stdout/stderr 前 200 字符与 notes，便于直接定位。
  */
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -55,8 +56,8 @@ import {
 } from '../lib/tunnel.js'
 import { Vault, defaultVaultDir, maskHost } from '../lib/vault.js'
 
-/** 目标主机的保险库别名。 */
-const TARGET_ALIAS = 'centos'
+/** 目标主机的保险库别名；可用 DSH_CENTOS_ALIAS 指向同构的另一台 CentOS 靶机。 */
+const TARGET_ALIAS = process.env.DSH_CENTOS_ALIAS ?? 'centos'
 /** 临时测试账号：uid 1000、wheel 组、shell bash，sudo 需要密码。 */
 const TEST_USER = 'dshtest'
 /**
@@ -70,6 +71,9 @@ const ROOT_ONLY_EXPECT = 'TOP-SECRET=42'
 /** root-only 目录，用于验证 sudo 上传落位与 mode/owner。 */
 const ROOT_ONLY_DIR = '/etc/dsh-regress'
 const SUDO_UPLOADMENT = `${ROOT_ONLY_DIR}/uploaded-regress.txt`
+/** 目录传输用例的远端目标。 */
+const REMOTE_DIR_MERGE = '/tmp/dsh-centos-dir-merge'
+const REMOTE_DIR_NEST = '/tmp/dsh-centos-dir-nest'
 /** 本脚本在远端创建的全部临时文件，结束时要删干净（含 API 内部中转文件）。 */
 const REMOTE_TEMP_FILES = [
   '/tmp/dsh-centos-roundtrip.txt',
@@ -213,6 +217,7 @@ const transfer = (extra) => transferFor(rootRecord, extra)
 async function cleanupRemote() {
   const script = [
     `rm -f ${REMOTE_TEMP_FILES.map(quotePosix).join(' ')}`,
+    `rm -rf ${[REMOTE_DIR_MERGE, REMOTE_DIR_NEST].map(quotePosix).join(' ')}`,
     'rm -f /tmp/.dsh-xfer-* /tmp/.dsh-ssh-sudo-*.sh 2>/dev/null',
     'echo "##cleanup##ok"',
   ].join('\n')
@@ -456,13 +461,25 @@ try {
     brief(selfCheck),
   )
 
-  // —— 15. 大输出按 maxOutputBytes 截断 ——
-  const big = await call('seq 1 200000', { maxOutputBytes: 10000 })
+  // —— 15. 大输出按 maxOutputBytes 截断，并保留开头与结尾 ——
+  const bigDumpBase = path.join(localDir, 'bigdump')
+  const big = await call('seq 1 200000', { maxOutputBytes: 10000, outputBase: bigDumpBase })
+  const bigDump = await readFile(`${bigDumpBase}.stdout.log`, 'utf8').catch(() => '')
   report(
-    '大输出（seq 1 200000）按 maxOutputBytes=10000 截断',
-    big.stdoutTruncated === true && big.stdout.length <= 10000,
-    `stdoutTruncated=${big.stdoutTruncated === true} 长度=${big.stdout.length} `
-    + `尾部=${JSON.stringify(big.stdout.slice(-60))} ${brief(big, 80)}`,
+    '大输出（seq 1 200000）按 maxOutputBytes=10000 截断且保留头尾',
+    big.stdoutTruncated === true
+    && big.stdout.startsWith('1\n2\n')
+    && big.stdout.includes('\n199999\n200000')
+    && big.stdout.includes('characters omitted')
+    && big.stdoutTotal > 10000
+    && big.stdoutOmitted > 0,
+    `stdoutTruncated=${big.stdoutTruncated === true} 长度=${big.stdout.length} total=${big.stdoutTotal} `
+    + `omitted=${big.stdoutOmitted} 尾部=${JSON.stringify(big.stdout.slice(-60))} ${brief(big, 80)}`,
+  )
+  report(
+    '截断时完整输出落盘且字符数等于原始输出',
+    bigDump.length === 1288895,
+    `dumpLength=${bigDump.length} ${JSON.stringify(bigDump.slice(-20))}`,
   )
 
   // —— 16/17. 非 root 用户的 sudo 三态基线：-n 需要密码、-S 可用 ——
@@ -904,7 +921,149 @@ try {
   )
 
   // ============================================================
-  // 四、环境观察（不计入 PASS/FAIL）
+  // 四、用户报告问题的回归（真实主机）
+  // ============================================================
+
+  // —— 47~49. 会话自伤：pkill -f 的模式串出现在命令文本里，先匹配到承载它的 shell ——
+  // 这是用户现场的真实成因：`bash -lc "<整段命令>"` 的 cmdline 里含模式串，pkill -f 把会话杀掉。
+  const SELF_KILL_MARK = 'DSH_SELFKILL_DEMO_20261107'
+  const selfKill = await call(`pkill -f ${SELF_KILL_MARK}; echo AFTER_SELFKILL`)
+  report(
+    'pkill -f 自伤：退出码归一化为 -1（不再是 4294967295）',
+    selfKill.exitCode === -1,
+    brief(selfKill),
+  )
+  report(
+    'pkill -f 自伤：分类为连接层而不是远端命令层',
+    selfKill.category === 'connection',
+    `category=${selfKill.category} ${brief(selfKill)}`,
+  )
+  report(
+    'pkill -f 自伤：无输出时给出「杀死了承载自己的会话」与 pkill -x / 脚本文件改法',
+    selfKill.stdout.length === 0
+    && selfKill.notes.some((note) => note.includes('自己的 SSH 会话'))
+    && selfKill.notes.some((note) => note.includes('pkill -x'))
+    && selfKill.notes.some((note) => note.includes('bash 文件')),
+    `stdout=${JSON.stringify(selfKill.stdout)} notes=${JSON.stringify(selfKill.notes)}`,
+  )
+  // 对照：`pkill -x` 按进程名匹配，不会命中承载命令的 bash。
+  const noSelfMatch = await call('pkill -x no-such-proc-20261107; echo RC=$?')
+  report(
+    '对照：pkill -x 不匹配任何进程时正常返回（RC=1，整体退出 0）',
+    noSelfMatch.exitCode === 0 && noSelfMatch.stdout.includes('RC=1'),
+    brief(noSelfMatch),
+  )
+  // 普通远端退出码不能被归一化逻辑误伤。
+  const exitSeven = await call('echo BEFORE_EXIT; exit 7')
+  report(
+    '普通远端退出码 7 原样保留',
+    exitSeven.exitCode === 7 && exitSeven.stdout.includes('BEFORE_EXIT'),
+    brief(exitSeven),
+  )
+
+  // —— 50~53. workdir：进入指定目录再执行，失败即停，且 cd 在提权边界之内 ——
+  const inTmp = await call('pwd', { workdir: '/tmp' })
+  report(
+    'workdir=/tmp 时命令在 /tmp 执行',
+    inTmp.exitCode === 0 && inTmp.stdout.trim() === '/tmp',
+    brief(inTmp),
+  )
+  const badWorkdir = await call('echo SHOULD_NOT_RUN', { workdir: '/no/such/dir-dsh-20261107' })
+  report(
+    'workdir 不存在时明确失败且不执行命令（不悄悄落在登录目录）',
+    badWorkdir.exitCode !== 0
+    && !badWorkdir.stdout.includes('SHOULD_NOT_RUN')
+    && badWorkdir.stderr.includes('无法进入工作目录'),
+    brief(badWorkdir),
+  )
+  const argvWorkdir = await runRemote({
+    record: rootRecord,
+    secret,
+    commandArray: ['pwd'],
+    workdir: '/var/log',
+    askpassPath,
+    knownHostsPath,
+    ...baseOptions,
+  })
+  report(
+    'workdir 与 command_array 组合生效',
+    argvWorkdir.exitCode === 0 && argvWorkdir.stdout.trim() === '/var/log',
+    brief(argvWorkdir),
+  )
+  // root-only 目录：dshtest 身份直接 cd 会失败，只有「先提权再 cd」才能成功。
+  await call(`chmod 700 ${ROOT_ONLY_DIR}`)
+  const dsSudoWorkdir = await runFor(testUserRecord, 'pwd; id -un', {
+    workdir: ROOT_ONLY_DIR,
+    sudoMode: 'script',
+    sudoPassword: TEST_USER_PASS,
+  })
+  report(
+    'workdir 在 sudo 边界内生效（先提权再 cd，root-only 目录也能进）',
+    dsSudoWorkdir.exitCode === 0
+    && dsSudoWorkdir.stdout.includes(ROOT_ONLY_DIR)
+    && /^root$/m.test(dsSudoWorkdir.stdout),
+    brief(dsSudoWorkdir),
+  )
+
+  // —— 54~57. 目录传输：默认合并「目录内容」，flatten:false 保留 scp 嵌套 ——
+  const srcDir = path.join(localDir, 'proj')
+  await mkdir(path.join(srcDir, 'sub'), { recursive: true })
+  await writeFile(path.join(srcDir, 'a.txt'), 'A-LOCAL\n', 'utf8')
+  await writeFile(path.join(srcDir, 'sub', 'b.txt'), 'B-LOCAL\n', 'utf8')
+
+  await call(`rm -rf ${REMOTE_DIR_MERGE}; mkdir -p ${REMOTE_DIR_MERGE}; echo KEEP > ${REMOTE_DIR_MERGE}/keep.txt`)
+  const mergeUp = await transfer({ direction: 'upload', local: srcDir, remote: REMOTE_DIR_MERGE, recursive: true })
+  const mergeList = await call(`find ${REMOTE_DIR_MERGE} -mindepth 1 -printf '%P\\n' | sort`)
+  report(
+    '目录上传默认把内容合并进已存在的目标（不再多一层 proj/）',
+    mergeUp.exitCode === 0
+    && mergeList.stdout.includes('a.txt')
+    && mergeList.stdout.includes('sub/b.txt')
+    && !mergeList.stdout.includes('proj/')
+    && mergeList.stdout.includes('keep.txt'),
+    `listing=${JSON.stringify(mergeList.stdout)} ${brief(mergeUp)}`,
+  )
+
+  await call(`rm -rf ${REMOTE_DIR_NEST}; mkdir -p ${REMOTE_DIR_NEST}`)
+  const nestUp = await transfer({ direction: 'upload', local: srcDir, remote: REMOTE_DIR_NEST, recursive: true, flatten: false })
+  const nestList = await call(`find ${REMOTE_DIR_NEST} -mindepth 1 -printf '%P\\n' | sort`)
+  report(
+    'flatten:false 保留 scp 的嵌套语义（目标下出现 proj/）',
+    nestUp.exitCode === 0 && nestList.stdout.includes('proj/a.txt') && nestList.stdout.includes('proj/sub/b.txt'),
+    `listing=${JSON.stringify(nestList.stdout)} ${brief(nestUp)}`,
+  )
+
+  const dlMerge = path.join(localDir, 'dl-merge')
+  await mkdir(dlMerge, { recursive: true })
+  await writeFile(path.join(dlMerge, 'local-only.txt'), 'LOCAL\n', 'utf8')
+  const mergeDown = await transfer({ direction: 'download', local: dlMerge, remote: REMOTE_DIR_MERGE, recursive: true })
+  const mergedA = await readFile(path.join(dlMerge, 'a.txt'), 'utf8').catch(() => '')
+  const mergedB = await readFile(path.join(dlMerge, 'sub', 'b.txt'), 'utf8').catch(() => '')
+  const mergedKeep = await readFile(path.join(dlMerge, 'local-only.txt'), 'utf8').catch(() => '')
+  const dlMergeFiles = await readdir(dlMerge).catch(() => [])
+  report(
+    '目录下载默认把内容合并进已存在的本地目录（不再多一层 proj/，本地文件保留）',
+    mergeDown.exitCode === 0
+    && mergedA === 'A-LOCAL\n'
+    && mergedB === 'B-LOCAL\n'
+    && mergedKeep === 'LOCAL\n'
+    && dlMergeFiles.includes('a.txt')
+    && !dlMergeFiles.includes('proj'),
+    `a=${JSON.stringify(mergedA)} b=${JSON.stringify(mergedB)} local=${JSON.stringify(mergedKeep)} `
+    + `files=${JSON.stringify(dlMergeFiles)} ${brief(mergeDown)}`,
+  )
+
+  const dlNewDir = path.join(localDir, 'dl-new')
+  const newDown = await transfer({ direction: 'download', local: dlNewDir, remote: REMOTE_DIR_MERGE, recursive: true })
+  const dlNewFiles = await readdir(dlNewDir).catch(() => [])
+  report(
+    '目录下载到不存在的本地路径时直接建成该目录并放入内容',
+    newDown.exitCode === 0 && dlNewFiles.includes('a.txt') && dlNewFiles.includes('sub'),
+    `files=${JSON.stringify(dlNewFiles)} ${brief(newDown)}`,
+  )
+
+  // ============================================================
+  // 五、环境观察（不计入 PASS/FAIL）
   // ============================================================
 
   // 绕过壳包装，把命令直接交给远端登录 shell：确认登录 shell 是 zsh，

@@ -9,8 +9,7 @@
  *
  * 覆盖范围：
  *   1. 两条 Windows 执行路径的基础形态：PowerShell 走 `-EncodedCommand`，cmd 走
- *      `cmd.exe /Q /D /C <script>`（后者是本次修复：旧实现 `cmd.exe /Q` 会进交互模式，
- *      banner 与提示符污染 stdout）。
+ *      `cmd.exe /Q /D /C <script>`（`/Q` 关回显、`/D` 关 AutoRun，脚本作为参数传入）。
  *   2. PowerShell 常用命令：输出/变量/插值/管道/过滤/排序/计数/文件与目录/复制移动删除/
  *      系统信息/日期/环境变量/JSON/try-catch。
  *   3. PowerShell 语法：单双引号、here-string、foreach 多行、if/else、哈希表、管道链。
@@ -372,6 +371,27 @@ try {
   const psMultiLine = await run('powershell', manyLines)
   const rowCount = lf(psMultiLine.stdout).split('\n').filter((line) => line.startsWith('row-')).length
   report('PowerShell 40 行脚本完整执行', psMultiLine.exitCode === 0 && rowCount === 40, `rows=${rowCount} ${brief(psMultiLine)}`)
+
+  // ============================================================
+  // F3. workdir：PowerShell 可用；cmd 明确拒绝（外层 sshd 会再包一层 cmd /c "..."，cd 的引号会被拆开）
+  // ============================================================
+  const psWorkdir = await run('powershell', 'Write-Output (Get-Location).Path', { workdir: 'C:\\Windows\\System32' })
+  report('PowerShell workdir 生效',
+    psWorkdir.exitCode === 0 && lf(psWorkdir.stdout).includes('C:\\Windows\\System32'), brief(psWorkdir))
+
+  const psBadWorkdir = await run('powershell', 'Write-Output "SHOULD_NOT_RUN"', { workdir: 'C:\\no\\such\\dir' })
+  report('PowerShell workdir 不存在时失败且不执行命令',
+    psBadWorkdir.exitCode !== 0 && !lf(psBadWorkdir.stdout).includes('SHOULD_NOT_RUN'), brief(psBadWorkdir))
+
+  let cmdWorkdirError
+  try {
+    await run('cmd', 'cd', { workdir: 'C:\\Windows' })
+  } catch (error) {
+    cmdWorkdirError = error
+  }
+  report('cmd 目标 workdir 明确拒绝（不静默跑错目录）',
+    cmdWorkdirError instanceof Error && /workdir/.test(cmdWorkdirError.message) && /PowerShell/.test(cmdWorkdirError.message),
+    cmdWorkdirError === undefined ? '没有抛错' : cmdWorkdirError.message)
 
   // ============================================================
   // G. 文件传输

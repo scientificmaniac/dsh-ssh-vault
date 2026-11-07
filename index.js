@@ -158,6 +158,25 @@ const CATEGORY_MESSAGE = {
 }
 
 /**
+ * 生成退出状态标记。
+ *
+ * 本地 ssh 客户端被信号终止时用 `[killed by signal: X]`（与内置 shell 工具的标记一致），
+ * 否则用 `[exit code: N]`；Windows 上的负退出码已经在执行层还原成 -1 这种有符号值。
+ *
+ * @param result - 执行结果。
+ * @returns 标记行数组。
+ */
+function exitStatusMarkers(result) {
+  if (typeof result.signal === 'string' && result.signal.length > 0) {
+    return [`[killed by signal: ${result.signal}]`]
+  }
+  if (result.exitCode !== 0 && result.exitCode !== null) {
+    return [`[exit code: ${result.exitCode}]`]
+  }
+  return []
+}
+
+/**
  * 把一次远程执行的结果整理成模型可见的文本，保持与内置 shell 工具一致的标记风格。
  *
  * 无论是正常结束、超时还是被取消，已收到的输出都会照常呈现——中断不等于失明。
@@ -175,23 +194,21 @@ function renderRun(result) {
   if (err.length > 0) parts.push(`[stderr]\n${err.replace(/\n+$/, '')}`)
   if (parts.length === 0) parts.push('(no output)')
   let body = parts.join('\n')
-  if (result.stdoutTruncated === true || result.stderrTruncated === true) {
-    body += '\n[output truncated]'
-  }
+  // 截断的说明已经在正文中间（collector 写入的 omitted 标记），这里只补类别与路径。
   const markers = []
   if (result.timedOut === true) markers.push(t('marker.timedOut'))
   if (result.aborted === true) markers.push(t('marker.cancelled'))
-  if (result.exitCode !== 0 && result.exitCode !== null) markers.push(`[exit code: ${result.exitCode}]`)
+  markers.push(...exitStatusMarkers(result))
   const categoryKey = typeof result.category === 'string' ? CATEGORY_MESSAGE[result.category] : undefined
   if (categoryKey !== undefined) markers.push(t(categoryKey))
   // 输出溢出时给出完整日志路径：响应里只有摘要，证据不丢。
   const dumpedPath = result.stdoutPath ?? result.stderrPath
   if (typeof dumpedPath === 'string' && dumpedPath.length > 0) {
-    const bytes = (result.stdout?.length ?? 0) + (result.stderr?.length ?? 0)
-    markers.push(t('err.outputSaved', { path: dumpedPath, bytes: String(bytes) }))
+    const chars = (result.stdoutTotal ?? out.length) + (result.stderrTotal ?? err.length)
+    markers.push(t('err.outputSaved', { path: dumpedPath, bytes: String(chars) }))
   }
   // 只在失败时回显 shell：成功时这行纯属噪音，失败时它常常就是答案本身。
-  if (result.exitCode !== 0 && typeof result.remoteShell === 'string' && result.remoteShell.length > 0) {
+  if ((result.exitCode !== 0 || result.signal !== undefined) && typeof result.remoteShell === 'string' && result.remoteShell.length > 0) {
     markers.push(t('err.remoteShell', { shell: result.remoteShell }))
   }
   if (Array.isArray(result.notes)) markers.push(...result.notes)
@@ -762,6 +779,14 @@ export function apply(ctx, config = {}) {
             + 'when a command contains quotes, brackets, dollar signs or globs that would otherwise be rewritten by the extra shell layer. '
             + 'Mutually exclusive with command.',
         },
+        workdir: {
+          type: 'string',
+          description: 'Remote directory to run the command in (POSIX and PowerShell targets). Implemented as a leading cd or '
+            + 'Set-Location inside the same script, with sudo applied around it when sudo is used, so root-only directories work too. '
+            + 'A failed cd aborts the command with a clear error instead of silently running in the login directory. '
+            + 'Relative paths resolve against the login home. cmd targets reject workdir: Windows sshd wraps the command in another '
+            + 'cmd.exe /c "..." layer, so write `cd /D <dir> && <command>` into the command yourself there.',
+        },
         run_in_background: {
           type: 'boolean',
           description: 'Run the command as a background job and return its job id immediately; read output with job_output '
@@ -858,6 +883,7 @@ export function apply(ctx, config = {}) {
       }
       const record = await requireHost(args.host)
       const notes = []
+      const workdir = typeof args.workdir === 'string' && args.workdir.trim().length > 0 ? args.workdir.trim() : undefined
 
       // 手写 `sudo -S`：提醒一次，口令其实不必进命令文本。
       if (args.sudo !== true && typeof args.command === 'string' && /sudo\s+-S/.test(args.command)) {
@@ -868,6 +894,16 @@ export function apply(ctx, config = {}) {
       if (typeof args.command === 'string'
         && /net\s+accounts|account\s*lockout|lockout\s*threshold|net\s+user\s+\S+\s+\/active:no|usermod\s+-L|passwd\s+-l|faillock/i.test(args.command)) {
         notes.push(t('note.accountLockRisk'))
+      }
+
+      // `pkill -f` / `killall -f` 在这条执行链上天生自伤：命令文本本身就是远端 shell 的
+      // 启动参数（`bash --norc -c '<command>'`），承载它的 shell 的 cmdline 里就有这段
+      // 文本，模式串会先匹配到它自己。执行前提醒，比事后只看到一个 -1 有用得多。
+      const selfKillProbe = typeof args.command === 'string'
+        ? args.command
+        : Array.isArray(args.command_array) ? args.command_array.join(' ') : ''
+      if (/pkill\s+(?:-\S+\s+)*-f\b|pkill\s+--full\b|killall\s+-f\b/i.test(selfKillProbe)) {
+        notes.push(t('note.selfKillRisk'))
       }
 
       const sudoPlan = await resolveSudoPlan(args, record)
@@ -907,6 +943,7 @@ export function apply(ctx, config = {}) {
             sudoMode: sudoPlan.mode,
             sudoPassword: sudoPlan.password,
             loginShell: args.login_shell === true,
+            workdir,
             shell: args.shell,
           }, { owner: exec.agent?.id })
         } catch (error) {
@@ -925,6 +962,7 @@ export function apply(ctx, config = {}) {
         sudoMode: sudoPlan.mode,
         sudoPassword: sudoPlan.password,
         loginShell: args.login_shell === true,
+        workdir,
         shell: args.shell,
       }, exec.signal)
     },
@@ -965,6 +1003,13 @@ export function apply(ctx, config = {}) {
         recursive: {
           type: 'boolean',
           description: 'Copy directories recursively. Required for a directory on either side.',
+        },
+        flatten: {
+          type: 'boolean',
+          description: 'Only for recursive copies. Default true: copy the contents of the source directory into the target directory, '
+            + 'merging when the target already exists (upload src/ to /root/app puts files directly in /root/app). '
+            + 'Set false for the raw scp nesting semantics, where an existing target directory receives the source directory as a subdirectory '
+            + '(upload src/ to /root/app lands in /root/app/src).',
         },
         bindAddress: {
           type: 'string',
@@ -1011,6 +1056,11 @@ export function apply(ctx, config = {}) {
     execute: async (args, exec) => {
       const record = await requireHost(args.host)
       const wantsSudo = args.sudo === true
+      // flatten 只对目录传输有意义；显式传了却没用 recursive 时直接报错，
+      // 免得调用方以为已经合并、实际只传了一个文件。
+      if (args.flatten !== undefined && args.recursive !== true) {
+        throw new Error(t('xfer.flattenNeedsRecursive'))
+      }
       const effectiveShell = pickShell(record.shell, args.shell)
       if (wantsSudo && shellKind(effectiveShell) !== 'posix') {
         throw new Error(t('sudo.nonPosix', { alias: record.alias, shell: effectiveShell }))
@@ -1030,6 +1080,7 @@ export function apply(ctx, config = {}) {
         local,
         remote: args.remote,
         recursive: args.recursive === true,
+        flatten: args.flatten,
         sudo: wantsSudo,
         sudoPassword: sudoResolved.value,
         normalizeEol: args.normalize_eol === true,
@@ -1049,9 +1100,8 @@ export function apply(ctx, config = {}) {
       const detail = result.stderr?.trim()
       const notes = Array.isArray(result.notes) ? result.notes : []
       const categoryKey = typeof result.category === 'string' ? CATEGORY_MESSAGE[result.category] : undefined
-      return [head, detail, ...(categoryKey === undefined ? [] : [t(categoryKey)]), ...notes]
+      return [head, detail, ...(categoryKey === undefined ? [] : [t(categoryKey)]), ...notes, ...exitStatusMarkers(result)]
         .filter((line) => typeof line === 'string' && line.length > 0).join('\n')
-        + (result.exitCode === 0 ? '' : `\n[exit code: ${result.exitCode}]`)
     },
   })))
 

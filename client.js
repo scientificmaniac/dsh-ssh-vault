@@ -861,7 +861,7 @@ window.__ModuleLoader__.load({
       if (signal !== null) {
         return { body: text.replace(signal[0], '\n').replace(/\n+$/, ''), signal: signal[1], exitCode: undefined }
       }
-      const exit = /\n\[exit code: (\d+)\](?:\n|$)/.exec(text)
+      const exit = /\n\[exit code: (-?\d+)\](?:\n|$)/.exec(text)
       if (exit !== null) {
         return { body: text.replace(exit[0], '\n').replace(/\n+$/, ''), signal: undefined, exitCode: Number(exit[1]) }
       }

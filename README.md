@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-2.1.1-informational.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-2.2.0-informational.svg)](package.json)
 [![Tests](https://img.shields.io/badge/test-504%20cases-brightgreen.svg)](test)
 
 </div>
@@ -106,11 +106,13 @@ Conventions for `ssh_run`:
 - **Explicit shell wrapping.** POSIX targets run through `bash --norc -c '<command>'`: the command is parsed exactly once by bash and cannot be reinterpreted by the remote login shell (fish/zsh). `login_shell: true` switches to `bash -lc` when you need the PATH that your profile defines. The returned `remoteShell` states what was actually used.
   `--norc` is not cosmetic: RHEL/CentOS builds of bash carry the `SSH_SOURCE_BASHRC` patch, so a **non-interactive** bash inside an SSH session still sources `~/.bashrc`; one failing `source` line there puts noise on the stderr of every command and derails failure diagnosis.
 - **Command arrays.** `command_array: ["find", ".", "-name", "*.log"]` quotes each element, so the remote shell performs no word splitting, globbing or variable expansion — the double-shell quoting trap disappears.
+- **Working directory.** `workdir: "/srv/app"` runs the command in that directory: a `cd` (POSIX) or `Set-Location` (PowerShell) is prepended to the same script, and with `sudo` it happens **inside** the elevated context, so root-only directories work. A failed `cd` aborts the command instead of silently running in the login directory. cmd targets reject `workdir` with an explanation: Windows sshd wraps the whole command in another `cmd.exe /c "..."`, which tears the quotes out of a quoted `cd` — write `cd /D <dir> && <command>` into the command yourself there.
 - **Three sudo forms.** `sudo: true` picks one automatically; `sudo: "wrap"` runs the whole command as `sudo -n bash -c '...'`; `sudo: "script"` writes a temporary script and runs it as root, so heredocs, pipelines, background jobs and multi-line flows never deform at the privilege boundary — the script is deleted right after, and the password reaches `sudo -S` through a base64 pipe, invisible to either command line and to the remote `ps`; `sudo: "prime"` only pre-warms the cache while the command keeps writing its own sudo. The password always comes from the vault. Once elevated, do **not** write sudo inside the command again.
 - **Error classification.** A failure carries one category label (connection / auth / sudo / remote command / truncated output); sudo failures are further split into "needs a password / not in sudoers / no sudo" with the exact fix.
-- **Large output on disk.** Past the cap, the response keeps a summary and the full stream is written under `outputs/` in the vault directory, with the absolute path attached to the result.
+- **A command that kills its own session is named as such.** The whole command travels as the shell's own argument, so a `pkill -f` pattern also appears in the cmdline of the shell carrying it. A negative local exit code used to surface as `4294967295`; it now renders as `[exit code: -1]`, is classified as a connection-layer failure, names the raw value, and suggests `pkill -x` or running a script file instead. The risk is also warned about before the command runs.
+- **Large output on disk.** Past the cap, the response keeps the **beginning and the end**, prints how many characters were omitted in the middle, and writes the full stream under `outputs/` in the vault directory with the absolute path attached.
 
-`ssh_transfer` adds three things to scp: `sudo: true` moves root-only files (remote temporary staging plus cleanup); `normalize_eol: true` converts CRLF to LF before uploading, so a script written on Windows does not fail with `$'\r': command not found` (binaries are detected and skipped); `mode` / `owner` / `preserve_mode` set remote permissions and ownership.
+`ssh_transfer` adds four things to scp: `sudo: true` moves root-only files (remote temporary staging plus cleanup); `normalize_eol: true` converts CRLF to LF before uploading, so a script written on Windows does not fail with `$'\r': command not found` (binaries are detected and skipped); `mode` / `owner` / `preserve_mode` set remote permissions and ownership; and recursive copies are **content-based by default** — `flatten` (default `true`) puts the source directory's contents into the target directory, merging when it already exists, so `src/` → `/root/app` lands in `/root/app/*` rather than `/root/app/src/*` and no `cp -f src/* . && rm -rf src` cleanup is needed. Pass `flatten: false` for raw scp nesting.
 
 `ssh_tunnel` reads the remote `sshd -T` forwarding policy **before** opening a tunnel: with `AllowTcpForwarding no` it hands back a paste-ready `Match User <user>` snippet that allows `LocalForwarding` (rather than globally enabling it) plus the `PermitOpen` explanation, instead of making you hit `administratively prohibited`. It manages the tunnel lifecycle (local port precheck, drop events, exponential-backoff reconnect, cleanup on unload) and returns the local addresses.
 
@@ -233,7 +235,7 @@ Host-side services are reached through `ctx.inject` as optional dependencies; a 
 | --- | --- |
 | `ssh_hosts` | `action` required (list / show / add / update / remove); `reveal` controls whether address and account are masked |
 | `ssh_run` | `host`, `command` required; optional `sudo`, `timeoutMs`, `workdir`, `run_in_background`, `wait_for`, `bindAddress` |
-| `ssh_transfer` | `host`, `direction`, `local`, `remote` required; optional `recursive` |
+| `ssh_transfer` | `host`, `direction`, `local`, `remote` required; optional `recursive` and `flatten` (default `true`) |
 | `ssh_probe` | `host` required; optional `timeoutMs`, `bindAddress` |
 
 The three terminal-style tools also register `presentCall` / `presentResult` hooks, but **the current DSH version has no consumer for them**; presentation is handled by the slots below.
@@ -355,7 +357,7 @@ lockout policy. `ssh_run` warns before commands that change account state.
 
 ### Output and timeouts
 
-- `ssh_run` caps a single result at 200000 characters and truncates beyond that
+- `ssh_run` caps a single result at 200000 characters; past that the response keeps the **beginning and the end**, marks how many characters were omitted in the middle, and writes the full stream under `outputs/` in the vault directory with the absolute path attached
 - Each command inside `/hosts` echoes at most 40 lines
 - Commands inside `/hosts` have a fixed 120s timeout that is not configurable
 - Foreground tool calls have **no streaming output**: the result appears in one piece when the command ends. To watch a long job, use `run_in_background`, whose output lands in a job card

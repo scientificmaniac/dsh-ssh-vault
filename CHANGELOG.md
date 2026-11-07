@@ -8,6 +8,24 @@ All notable changes to this project are documented here. The format follows
 
 
 
+## [2.2.0] - 2026-11-07
+
+### Added
+
+- **`ssh_run`'s `workdir`**: run the command in a remote directory on POSIX and PowerShell targets. A `cd` or `Set-Location` is inserted into the same script; with `sudo` it happens **inside** the elevated context, so root-only directories work. A failed `cd` aborts the command instead of silently running in the login directory. cmd targets reject it with an explanation: Windows sshd wraps the command in another `cmd.exe /c "..."` layer, which tears the quotes out of a quoted `cd`.
+- **`ssh_transfer`'s `flatten`** (default `true`): recursive copies move the source directory's **contents** into the target. Uploading `src/` to an existing `/root/app` now lands in `/root/app/*` instead of `/root/app/src/*`; downloads behave the same way, so the `cp -f src/* . && rm -rf src` cleanup is no longer needed. `flatten: false` keeps raw scp nesting.
+- **Self-kill diagnosis**: a command that kills its own SSH session (for example `pkill -f` matching the shell that carries the command text) is now explained. Negative local exit codes render as `[exit code: -1]` instead of `[exit code: 4294967295]`, the raw `0xFFFFFFFF` value is named, the failure is classified as connection-layer, and the empty-output case gets a dedicated explanation with `pkill -x` / script-file advice. Commands containing `pkill -f` / `killall -f` also get a warning before they run.
+- `test/live-tools.mjs`: a live regression for the model-facing tools (`ssh_run` / `ssh_transfer`) that executes the real tool definitions against a vault host; `npm run test:live:tools`.
+
+### Changed
+
+- **Truncated output keeps head and tail**: the in-memory excerpt is split between the beginning and the end of the stream, the omitted character count is printed in the middle, and the full stream is still written under `outputs/` with its absolute path. The output-saved note now reports characters, not bytes.
+- **A `flatten` value without `recursive: true` fails loudly** instead of silently transferring a single file.
+
+### Fixed
+
+- **Windows exit codes were printed unsigned**: a remote `-1` surfaced as `4294967295`. Exit codes are normalised to signed 32-bit values everywhere, and the terminal card's status parser accepts negative codes.
+
 ## [2.1.1] - 2026-11-01
 
 ### Fixed

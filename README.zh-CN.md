@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-2.1.1-informational.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-2.2.0-informational.svg)](package.json)
 [![Tests](https://img.shields.io/badge/test-504%20cases-brightgreen.svg)](test)
 
 </div>
@@ -106,11 +106,13 @@ dsh plugin --profile desktop list
 - **显式 shell 包装。** POSIX 目标默认用 `bash --norc -c '<command>'`：命令固定由 bash 解析一次，不会落到远端登录 shell（fish/zsh）上被改写成另一个意思。`login_shell: true` 改用 `bash -lc`（需要 profile 里定义的 PATH 时）。返回里的 `remoteShell` 会说明这次实际用了什么。
   `--norc` 不是可有可无的：RHEL/CentOS 的 bash 打了 `SSH_SOURCE_BASHRC` 补丁，SSH 会话里**非交互** bash 也会 source `~/.bashrc`，用户 .bashrc 里一条失败的 source 就会让每条命令的 stderr 多一行噪声，进而干扰失败诊断。
 - **命令数组。** `command_array: ["find", ".", "-name", "*.log"]` 会逐元素引号化，远端 shell 不做分词、通配或变量展开，彻底避开双层 shell 的引号陷阱。
+- **工作目录。** `workdir: "/srv/app"` 让命令在该目录执行：`cd`（POSIX）或 `Set-Location`（PowerShell）被并进同一段脚本；用 `sudo` 时先提权再进入目录，因此 root-only 目录也能进。`cd` 失败会直接终止命令，不会悄悄落到登录目录里执行。cmd 目标会明确拒绝 `workdir`：Windows sshd 会把整段命令再包一层 `cmd.exe /c "..."`，带引号的 `cd` 会被拆开——这类目标请自己在 command 里写 `cd /D <目录> && <命令>`。
 - **sudo 三态。** `sudo: true` 自动选形态；`sudo: "wrap"` 把整条命令包成 `sudo -n bash -c '...'`；`sudo: "script"` 写临时脚本再以 root 执行——heredoc、管道、后台任务、多行流程都不会在提权边界上变形，脚本执行完即删，口令经 base64 管道喂给 `sudo -S`，两端命令行与远端 `ps` 都看不到；`sudo: "prime"` 只预热缓存，命令里照旧自己写 sudo。口令始终来自保险库。用了任一形态后**不要**在命令里再写 sudo。
 - **错误分类。** 失败时附一行类别标签（连接 / 认证 / sudo / 远端命令 / 输出截断）；sudo 失败还会细分「需要密码 / 不在 sudoers / 没有 sudo」并给出修复命令。
-- **大输出落盘。** 超过上限时响应只保留摘要，完整内容写进保险库目录下的 `outputs/`，并把绝对路径附在结果里。
+- **杀死自己会话的命令会被直接点破。** 整段命令本身就是远端 shell 的启动参数，所以 `pkill -f` 的模式串也会出现在承载它的 shell 的 cmdline 里。过去这种自伤会显示成 `4294967295`（实际是 `-1`），现在渲染为 `[exit code: -1]`、归类为连接层、标明原始值，并给出 `pkill -x` / 改用脚本文件两条改法；执行前也会先提醒一次风险。
+- **大输出落盘。** 超过上限时响应保留**开头与结尾**，正文中间标出省略了多少字符；完整内容写进保险库目录下的 `outputs/`，并把绝对路径附在结果里。
 
-`ssh_transfer` 在 scp 之上补了三件事：`sudo: true` 读写 root-only 文件（远端临时文件中转 + 自动清理）；`normalize_eol: true` 上传前把 CRLF 规范成 LF（Windows 上写的脚本在远端不会报 `$'\r': 未找到命令`，二进制文件自动跳过）；`mode` / `owner` / `preserve_mode` 设置远端权限与属主。
+`ssh_transfer` 在 scp 之上补了四件事：`sudo: true` 读写 root-only 文件（远端临时文件中转 + 自动清理）；`normalize_eol: true` 上传前把 CRLF 规范成 LF（Windows 上写的脚本在远端不会报 `$'\r': 未找到命令`，二进制文件自动跳过）；`mode` / `owner` / `preserve_mode` 设置远端权限与属主；目录复制默认按**内容**语义——`flatten`（默认 `true`）把源目录的内容放进目标目录，目标已存在就合并，因此 `src/` → `/root/app` 落在 `/root/app/*` 而不是 `/root/app/src/*`，也不用再 `cp -f src/* . && rm -rf src` 收拾。需要 scp 原本的嵌套语义时传 `flatten: false`。
 
 `ssh_tunnel` 在开隧道**之前**先读远端 `sshd -T` 的转发策略：`AllowTcpForwarding no` 时直接给出「用 `sshd_config` 的 `Match User <user>` 放行 `LocalForwarding`、不要全局改」的可粘贴片段与 `PermitOpen` 说明，而不是等撞上 `administratively prohibited`。它维护隧道生命周期（本地端口占用预检、断线事件、指数退避重连、插件卸载时清理），并返回本地可用地址。
 
@@ -233,7 +235,7 @@ flowchart TB
 | --- | --- |
 | `ssh_hosts` | `action` 必填（list / show / add / update / remove）；`reveal` 控制地址与账号是否脱敏 |
 | `ssh_run` | `host`、`command` 必填；`sudo`、`timeoutMs`、`workdir`、`run_in_background`、`wait_for`、`bindAddress` 可选 |
-| `ssh_transfer` | `host`、`direction`、`local`、`remote` 必填；`recursive` 可选 |
+| `ssh_transfer` | `host`、`direction`、`local`、`remote` 必填；`recursive` 与 `flatten`（默认 `true`）可选 |
 | `ssh_probe` | `host` 必填；`timeoutMs`、`bindAddress` 可选 |
 
 三个终端类工具注册了 `presentCall` / `presentResult` 钩子，但**当前 DSH 版本没有消费方**；实际呈现由下面的槽位负责。
@@ -351,7 +353,7 @@ Windows OpenSSH 对**已锁定**的账户是直接断开连接，而不是回 `P
 
 ### 输出与超时
 
-- `ssh_run` 单次输出默认上限 200000 字符；超出部分不再只是被砍掉——完整 stdout / stderr 会写进保险库目录下的 `outputs/`，响应里附上绝对路径，摘要与证据都不丢
+- `ssh_run` 单次输出默认上限 200000 字符；超出上限时响应保留**开头与结尾**并在中间标出省略了多少字符——完整 stdout / stderr 会写进保险库目录下的 `outputs/`，响应里附上绝对路径，摘要与证据都不丢
 - `ssh_run` 的 `command` 作为 `-c` 参数传给远端 shell 时受远端命令行长度限制，超过 64 KiB 会自动改走 stdin（`bash -s`），返回里的 `remoteShell` 会如实反映走了哪条路
 - `/hosts` 里每条命令最多回显 40 行
 - `/hosts` 的命令超时固定 120 秒，不可配置
