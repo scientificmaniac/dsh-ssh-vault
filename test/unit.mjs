@@ -203,10 +203,13 @@ if (spawnable) {
   check('timeoutMs=0 表示不限时', noLimit.timedOut === false && noLimit.stdout === 'QUICK', JSON.stringify(noLimit))
 
   // Windows 的 DWORD 退出码：process.exit(-1) 在 Node 里显示为 4294967295。
+  // POSIX 上 exit(-1) 本身就是 255，归一化不该改动它。
   const negative = await runProcess(process.execPath, ['-e', 'process.exit(-1)'], {
     env: probeEnv, timeoutMs: 15000, maxOutputBytes: 1000,
   })
-  check('无符号 4294967295 退出码还原为 -1', negative.exitCode === -1, String(negative.exitCode))
+  const negativeExpected = process.platform === 'win32' ? -1 : 255
+  check('负退出码按平台归一化（Windows 4294967295→-1，POSIX exit(-1)→255）',
+    negative.exitCode === negativeExpected, `platform=${process.platform} exit=${negative.exitCode}`)
 
   // 溢出落盘：响应里只有摘要，完整内容必须在磁盘上可查。
   const { tmpdir } = await import('node:os')
