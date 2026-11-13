@@ -14,6 +14,7 @@
 import { mkdir, readFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { registerSshJob } from './lib/background.js'
+import { Diagnostics } from './lib/diagnostics.js'
 import { LOCALE_SETTINGS_NAMESPACE, applyPreference, onLocaleChange, readLocalePreference, t } from './lib/i18n.js'
 import { assertSupportedPlatform } from './lib/platform.js'
 import {
@@ -274,6 +275,52 @@ export function apply(ctx, config = {}) {
   /** 输出目录只需准备一次。 */
   let outputDirReady
 
+  // —— 可开关的诊断日志 ——
+  //
+  // 默认关闭：只把开关的判断放在热点路径上，关着的时候不写内存、不碰磁盘、也不镜像到宿主
+  // logger。打开之后才记录错误与事件，开关状态持久化在日志目录里，重启后保持。
+  //
+  // 配置形态两种都认：`logging: true` 与 `logging: { enabled, dir, maxBytes }`。
+  const loggingConfig = typeof config.logging === 'object' && config.logging !== null ? config.logging : {}
+  const diagnostics = new Diagnostics({
+    dir: typeof loggingConfig.dir === 'string' && loggingConfig.dir.length > 0
+      ? loggingConfig.dir
+      : join(vaultDir, 'logs'),
+    enabled: typeof config.logging === 'boolean' ? config.logging : loggingConfig.enabled === true,
+    mirror: ctx.logger,
+    maxBytes: Number.isFinite(loggingConfig.maxBytes) ? loggingConfig.maxBytes : undefined,
+  })
+
+  /**
+   * 把一个工具的 `execute` 包一层：失败时写进诊断日志，然后原样抛出。
+   *
+   * 工具失败在界面上只呈现成一段文字，出问题的人看不到到堆栈；这里补上证据，
+   * 但只在开关打开时留下，参数不整份进日志（里面可能有口令）。
+   *
+   * @param toolName - 工具名。
+   * @param execute - 原执行函数。
+   * @returns 包好的执行函数。
+   */
+  const traceTool = (toolName, execute) => async (args, exec) => {
+    try {
+      return await execute(args, exec)
+    } catch (error) {
+      diagnostics.error(`tool:${toolName}`, error, {
+        host: args?.host,
+        alias: args?.alias,
+        action: args?.action,
+      })
+      throw error
+    }
+  }
+
+  /**
+   * 注册工具：在 `textTool` 之上补上失败日志。
+   * @param spec - 工具定义。
+   * @returns 可直接交给 `ctx.tools.register` 的定义。
+   */
+  const registerTool = (spec) => textTool({ ...spec, execute: traceTool(spec.name, spec.execute) })
+
   // —— 本地转发隧道 ——
   //
   // 隧道是长生命周期资源，必须挂在插件生命周期上：插件卸载时若留着 ssh -N 子进程，
@@ -281,7 +328,7 @@ export function apply(ctx, config = {}) {
   const tunnelManager = new TunnelManager({
     sshExecutable,
     onEvent: (event) => {
-      ctx.logger?.info?.(`[ssh-vault] tunnel ${event.type} ${event.id ?? ''} ${event.detail ?? ''}`.trim())
+      diagnostics.info('tunnel', `${event.type} ${event.id ?? ''}`.trim(), event.detail)
     },
   })
   ctx.effect(() => () => {
@@ -292,7 +339,9 @@ export function apply(ctx, config = {}) {
     dir: vaultDir,
     keyProtection,
     masterPassword: config.masterPassword,
-    logger: ctx.logger,
+    // 安全边界降级这类警告也归开关管：关掉日志就不再往宿主 logger 里写，
+    // 但「密钥保护方式」仍会出现在设置页与工具结果里，信息并没有消失。
+    logger: diagnostics.logger,
   })
 
   // —— 界面语言：跟随 DSH 的「设置 → 常规 → 语言」——
@@ -555,7 +604,7 @@ export function apply(ctx, config = {}) {
     return renderRun(result)
   }
 
-  ctx.effect(() => ctx.tools.register(textTool({
+  ctx.effect(() => ctx.tools.register(registerTool({
     name: 'ssh_hosts',
     description: 'Manage the encrypted SSH vault that stores host address, port, account, and password. '
       + 'Actions: list, show, add, update, remove. Passwords are never returned; addresses and accounts are '
@@ -749,7 +798,7 @@ export function apply(ctx, config = {}) {
     },
   })))
 
-  ctx.effect(() => ctx.tools.register(textTool({
+  ctx.effect(() => ctx.tools.register(registerTool({
     name: 'ssh_run',
     terminal: true,
     presentCall: (args) => terminalCall(args.command, args.host),
@@ -968,7 +1017,7 @@ export function apply(ctx, config = {}) {
     },
   })))
 
-  ctx.effect(() => ctx.tools.register(textTool({
+  ctx.effect(() => ctx.tools.register(registerTool({
     name: 'ssh_transfer',
     terminal: true,
     presentCall: (args) => terminalCall(
@@ -1105,7 +1154,7 @@ export function apply(ctx, config = {}) {
     },
   })))
 
-  ctx.effect(() => ctx.tools.register(textTool({
+  ctx.effect(() => ctx.tools.register(registerTool({
     name: 'ssh_probe',
     terminal: true,
     presentCall: (args) => terminalCall(`ssh_probe ${args.host}`, args.host),
@@ -1206,7 +1255,7 @@ export function apply(ctx, config = {}) {
     },
   })))
 
-  ctx.effect(() => ctx.tools.register(textTool({
+  ctx.effect(() => ctx.tools.register(registerTool({
     name: 'ssh_tunnel',
     terminal: true,
     presentCall: (args) => terminalCall(`ssh_tunnel ${args.action}${typeof args.host === 'string' ? ` ${args.host}` : ''}`, args.host),
@@ -1452,7 +1501,8 @@ export function apply(ctx, config = {}) {
       vault,
       vaultDir,
       probe: probeHost,
-      logger: ctx.logger,
+      diagnostics,
+      logger: diagnostics.logger,
       // 这条路由能读写凭据与私钥，必须和 /api 一样过宿主的 Connection 信任栅栏：
       // Host/Origin 校验（防 DNS rebinding / 跨站调用）+ 浏览器登录认证。
       // connection 服务缺失时（非 Web 组合）退回放行，由宿主自身的鉴权层兜底。
@@ -1607,6 +1657,7 @@ export function apply(ctx, config = {}) {
           // 整体成败仍交给 kind（会话卡片以外的通用呈现会用到），但两张卡片各自按分段标记亮灯。
           return { kind: probeFailed || execFailed ? 'error' : 'success', text: sections.join('\n\n') }
         } catch (error) {
+          diagnostics.error('command:hosts', error)
           return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
         }
       },

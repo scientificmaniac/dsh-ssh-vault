@@ -87,6 +87,19 @@ window.__ModuleLoader__.load({
         anyFailed: '有失败',
         shellLabel: 'shell',
         dockHint: '命令输出：发送第一条消息后并入对话记录',
+        diagTitle: '错误日志',
+        diagIntro: '默认不写日志。开启后，工具与设置接口的报错会记进下面的文件，排查连接失败时可以直接看。',
+        diagEnable: '开启日志',
+        diagDisable: '关闭日志',
+        diagOn: '已开启',
+        diagOff: '已关闭',
+        diagPath: '日志文件',
+        diagOpen: '打开日志目录',
+        diagClear: '清空日志',
+        diagCleared: '已清空',
+        diagEmpty: '暂无日志记录。',
+        diagHint: '口令不会写进日志：形如 password=… 的内容会被替换成 ***。',
+        diagBusy: '处理中…',
       },
       en: {
         sectionTitle: 'SSH Connections',
@@ -157,6 +170,19 @@ window.__ModuleLoader__.load({
         anyFailed: 'Failed',
         shellLabel: 'shell',
         dockHint: 'Command output: it moves into the transcript after your first message',
+        diagTitle: 'Error log',
+        diagIntro: 'Nothing is logged by default. Turn it on to record tool and settings failures into the file below, which is the fastest way to diagnose a failing connection.',
+        diagEnable: 'Turn on',
+        diagDisable: 'Turn off',
+        diagOn: 'On',
+        diagOff: 'Off',
+        diagPath: 'Log file',
+        diagOpen: 'Open log folder',
+        diagClear: 'Clear log',
+        diagCleared: 'Cleared',
+        diagEmpty: 'No entries yet.',
+        diagHint: 'Passwords are never logged: anything shaped like password=… is replaced with ***.',
+        diagBusy: 'Working…',
       },
     }
     // —— 界面语言：交给宿主的 locale 服务 ——
@@ -577,6 +603,93 @@ window.__ModuleLoader__.load({
           h('button', { style: S.button, disabled: busy, onClick: props.onCancel }, t('cancel'))))
     }
 
+    /**
+     * 诊断日志卡片：一个开关、日志路径、最近几条记录。
+     *
+     * 开关独立于主机表单——它不属于任何一台主机，改动立即生效，不需要「保存」。
+     * 关闭时插件完全不写日志；开启后记录的是错误与关键事件，口令字段在落盘前已被抹掉。
+     */
+    function DiagnosticsCard() {
+      const t = useT()
+      const tRef = useRef(t)
+      tRef.current = t
+      const [state, setState] = useState({ status: 'loading', enabled: false, path: '', bytes: 0, entries: [], error: '' })
+      const [busy, setBusy] = useState(false)
+      const [cleared, setCleared] = useState(false)
+
+      const apply = (value) => {
+        setState({
+          status: 'ready',
+          enabled: value?.enabled === true,
+          path: typeof value?.path === 'string' ? value.path : '',
+          bytes: Number.isFinite(value?.bytes) ? value.bytes : 0,
+          entries: Array.isArray(value?.entries) ? value.entries : [],
+          error: '',
+        })
+      }
+
+      const load = useCallback(async () => {
+        const result = await call('diagnostics', undefined, tRef.current)
+        if (result.ok) apply(result.value)
+        else setState((s) => ({ ...s, status: 'ready', error: result.error }))
+      }, [])
+
+      useEffect(() => { load() }, [load])
+
+      const run = async (action, payload) => {
+        setBusy(true)
+        const result = await call(action, payload, tRef.current)
+        setBusy(false)
+        if (result.ok) apply(result.value)
+        else setState((s) => ({ ...s, error: result.error }))
+        return result.ok
+      }
+
+      const toggle = async () => {
+        setCleared(false)
+        await run('setDiagnostics', { enabled: !state.enabled })
+      }
+
+      const clear = async () => {
+        if (await run('clearDiagnostics', {})) setCleared(true)
+      }
+
+      const openLogs = async () => {
+        const result = await call('openLogs', {}, tRef.current)
+        if (!result.ok) setState((s) => ({ ...s, error: result.error }))
+      }
+
+      const size = state.bytes > 0 ? ` · ${(state.bytes / 1024).toFixed(1)} KB` : ''
+
+      return h('div', { style: S.card },
+        h('div', { style: S.cardHead },
+          h('span', { style: S.alias }, t('diagTitle')),
+          h('span', { style: state.enabled ? S.okText : { ...S.badge, borderColor: 'transparent' } },
+            state.enabled ? t('diagOn') : t('diagOff'))),
+        h('div', { style: S.hint }, t('diagIntro')),
+        state.path.length > 0
+          ? h('div', { style: S.metaRow },
+            h('span', { style: S.label }, t('diagPath')),
+            h('span', { style: S.metaPath, title: state.path }, `${state.path}${size}`))
+          : null,
+        h('div', { style: S.row },
+          h('button', {
+            ...(state.enabled ? {} : { 'data-variant': 'primary' }),
+            style: state.enabled ? S.button : { ...S.button, ...S.primary },
+            disabled: busy || state.status === 'loading',
+            onClick: toggle,
+          }, state.enabled ? t('diagDisable') : t('diagEnable')),
+          h('button', { style: S.button, disabled: busy, onClick: openLogs }, t('diagOpen')),
+          h('button', { style: { ...S.button, ...S.danger }, disabled: busy, onClick: clear }, t('diagClear')),
+          busy ? h('span', { style: S.hint }, t('diagBusy')) : null,
+          cleared && !busy ? h('span', { style: S.okText }, t('diagCleared')) : null),
+        state.entries.length > 0
+          ? h('pre', { style: S.pre }, state.entries.join('\n\n'))
+          : h('div', { style: S.hint }, t('diagEmpty')),
+        h('div', { style: S.hint }, t('diagHint')),
+        state.error.length > 0 ? h('div', { style: S.error }, state.error) : null)
+    }
+
     /** 设置页主体。 */
     function SshVaultSettings() {
       const t = useT()
@@ -772,7 +885,9 @@ window.__ModuleLoader__.load({
                       test.notes && test.notes.length > 0 ? h('pre', { style: S.pre }, test.notes.join('\n')) : null)
                     : null),
                 isEditing(host) ? h(HostForm, { record: host, ...formHandlers }) : null)
-            }))
+            }),
+        // 日志开关放在列表之后：它是排查手段，日常管理主机时不该抢占视线。
+        h(DiagnosticsCard, { key: 'diagnostics-card' }))
     }
 
     // —— SSH 工具的对话内终端视图 ——

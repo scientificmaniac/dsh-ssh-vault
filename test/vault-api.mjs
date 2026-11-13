@@ -320,6 +320,61 @@ async function invoke(handler, url, body, method, headers) {
   check('openVault 失败时报错', failed.envelope.ok === false && String(failed.envelope.error.message).includes('shell unavailable'), JSON.stringify(failed.envelope))
 }
 
+// —— 诊断日志：开关、清空、打开目录 ——
+{
+  const vault = memoryVault()
+  const opened = []
+  const state = { enabled: false, entries: ['[2026-11-11T00:00:00.000Z] ERROR tool:ssh_run — boom'] }
+  const fakeDiagnostics = {
+    dir: path.join(VAULT_DIR, 'logs'),
+    async status() {
+      return {
+        enabled: state.enabled,
+        dir: this.dir,
+        path: path.join(this.dir, 'diagnostics.log'),
+        maxBytes: 1024,
+        bytes: 0,
+        entries: state.entries,
+      }
+    },
+    async setEnabled(value) {
+      state.enabled = value === true
+      return state.enabled
+    },
+    async clear() {
+      state.entries = []
+    },
+    async ensureDir() {},
+  }
+  const handler = createVaultApi({
+    vault,
+    vaultDir: VAULT_DIR,
+    probe: async () => ({ ok: true, detail: '', notes: [] }),
+    diagnostics: fakeDiagnostics,
+    openFolder: async (target) => { opened.push(target) },
+  })
+
+  const initial = await invoke(handler, `${API_PREFIX}/diagnostics`, {})
+  check('diagnostics 返回开关状态', initial.envelope.ok === true && initial.envelope.value.enabled === false, JSON.stringify(initial.envelope))
+
+  const turnedOn = await invoke(handler, `${API_PREFIX}/setDiagnostics`, { enabled: true })
+  check('setDiagnostics 打开开关', turnedOn.envelope.ok === true && state.enabled === true, JSON.stringify(turnedOn.envelope))
+
+  // 只认真正的布尔值：表单里来的字符串 "true" 不该把日志打开。
+  const notBoolean = await invoke(handler, `${API_PREFIX}/setDiagnostics`, { enabled: 'true' })
+  check('setDiagnostics 拒绝非布尔真值', notBoolean.envelope.value.enabled === false, JSON.stringify(notBoolean.envelope))
+
+  const cleared = await invoke(handler, `${API_PREFIX}/clearDiagnostics`, {})
+  check('clearDiagnostics 清空记录', cleared.envelope.ok === true && cleared.envelope.value.entries.length === 0, JSON.stringify(cleared.envelope))
+
+  const openedLogs = await invoke(handler, `${API_PREFIX}/openLogs`, { path: 'C:\\Windows' })
+  check('openLogs 只打开插件日志目录', openedLogs.envelope.ok === true && opened.length === 1 && opened[0] === fakeDiagnostics.dir, JSON.stringify(opened))
+
+  const withoutDiagnostics = createVaultApi({ vault, vaultDir: VAULT_DIR, probe: async () => ({ ok: true, detail: '', notes: [] }) })
+  const missing = await invoke(withoutDiagnostics, `${API_PREFIX}/diagnostics`, {})
+  check('缺少诊断日志时明确报错', missing.envelope.ok === false, JSON.stringify(missing.envelope))
+}
+
 await removeVaultDir()
 
 // —— test 必须走短超时：设置页会给每台主机自动体检，一条不通的主机不能拖住整页 ——

@@ -28,6 +28,37 @@ function check(name, condition, detail) {
 const vaultDir = await mkdtemp(path.join(os.tmpdir(), 'dsh-ssh-vault-apply-'))
 
 /**
+ * 调一次设置接口，返回解析后的 envelope。
+ * @param handler - 路由处理器。
+ * @param action - 路由末段。
+ * @param payload - JSON 请求体。
+ * @returns 解析后的 envelope；解析失败时为 `undefined`。
+ */
+async function callApi(handler, action, payload) {
+  const res = {
+    statusCode: 0,
+    body: '',
+    writeHead(status) { this.statusCode = status },
+    end(chunk) { this.body = chunk ?? '' },
+  }
+  const body = Buffer.from(JSON.stringify(payload ?? {}), 'utf8')
+  await handler({
+    method: 'POST',
+    url: `${API_PREFIX}/${action}`,
+    headers: {},
+    async *[Symbol.asyncIterator]() {
+      yield body
+    },
+    destroy() {},
+  }, res)
+  try {
+    return JSON.parse(res.body)
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * 造一个够用的假 Host 上下文：记录注册项，并允许测试主动触发设置文档更新。
  * @param initialPreference - `locale.preference` 的初始值。
  */
@@ -170,6 +201,26 @@ try {
     }, rejectedRes)
     check('设置接口先过宿主信任栅栏', rejectedRes.statusCode === 403 && rejectedRes.body === 'forbidden',
       `${rejectedRes.statusCode}/${rejectedRes.body}`)
+
+    // —— 诊断日志：设置页的开关必须真的控制插件自己的日志 ——
+    const off = await callApi(apiRoute.handler, 'diagnostics', {})
+    check('诊断日志默认关闭', off?.value?.enabled === false, JSON.stringify(off))
+    const on = await callApi(apiRoute.handler, 'setDiagnostics', { enabled: true })
+    check('设置接口可开启诊断日志', on?.value?.enabled === true, JSON.stringify(on))
+
+    const sshRun = zh.state.tools.find((tool) => tool.name === 'ssh_run')
+    let toolError
+    try {
+      // 只给一个不存在的别名：不触发真实 SSH，但会走一遍工具的错误路径。
+      await sshRun.execute({ host: 'ghost', command: 'true' }, { signal: undefined })
+    } catch (caught) {
+      toolError = caught
+    }
+    check('未知主机的工具调用抛错', toolError instanceof Error, String(toolError))
+    const status = await callApi(apiRoute.handler, 'diagnostics', {})
+    const logged = (status?.value?.entries ?? []).join('\n')
+    check('工具失败进入诊断日志', logged.includes('tool:ssh_run'), logged.slice(0, 200))
+    check('日志带上主机别名', logged.includes('host=ghost'), logged.slice(0, 200))
   }
 
   const zhCommand = zh.state.commands[0]

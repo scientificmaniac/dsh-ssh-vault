@@ -8,6 +8,17 @@ All notable changes to this project are documented here. The format follows
 
 
 
+## [Unreleased]
+
+### Added
+
+- **An error log you can switch on and off**: a new “Error log” card at the bottom of the settings page. It is **off by default**; once enabled, tool failures, `/hosts` command exceptions, tunnel events and vault/settings warnings are written to `<vault>/logs/diagnostics.log` with their source and stack. The file rotates to `.1` past 512 KiB, and anything shaped like `password=…` is replaced by `***` before it lands on disk. The switch itself lives in `diagnostics.json` beside it, so a restart does not silently turn logging back off. The same card opens the log folder, clears the log, and shows the last 40 entries. `logging: true` or `logging: { enabled, dir, maxBytes }` sets the same thing from configuration.
+- Four new settings-route actions: `/ssh-vault/diagnostics`, `setDiagnostics`, `clearDiagnostics`, `openLogs`.
+
+### Changed
+
+- The plugin no longer writes to the host logger unconditionally: all of its logging goes through the switch above, and nothing at all is written while it is off.
+
 ## [2.2.0] - 2026-11-07
 
 ### Added

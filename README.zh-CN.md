@@ -214,7 +214,7 @@ flowchart TB
 
 ## 配置
 
-插件**没有用户可配置项**。`cordis.patch.yml` 里的 `config: {}` 是空对象，Loader 条目的 `id` 固定为 `ssh-vault`。
+插件默认**不需要任何配置**：`cordis.patch.yml` 里的 `config: {}` 可以保持空对象，Loader 条目的 `id` 固定为 `ssh-vault`。
 
 行为受以下因素影响：
 
@@ -224,6 +224,7 @@ flowchart TB
 | 密钥保护方式 | `dpapi`（Windows DPAPI，默认）或 `passphrase`（scrypt 派生，磁盘上不保存密钥材料）。`file` 会把密钥以明文保存，只能显式选择，且不会被当作回退 |
 | 超时 | `ssh_run` 默认 120 秒，可调，上限 30 分钟；`/hosts` 内的命令固定 120 秒 |
 | 连通性体检 | 设置页与 `/hosts` 用 15 秒探测超时；后台每 5 分钟刷新缓存 |
+| 诊断日志 | **默认关闭**。开启后（设置页底部「错误日志」卡片，或配置 `logging: true`）把工具与设置接口的报错写进 `<保险库目录>/logs/diagnostics.log`：带来源与堆栈、超过 512 KiB 轮转为 `.1`、形如 `password=…` 的口令字段自动替换成 `***`。开关状态保存在同目录的 `diagnostics.json`，重启后保持。需要改位置或大小写 `logging: { enabled, dir, maxBytes }` |
 
 ## API 与扩展点
 
@@ -272,8 +273,12 @@ flowchart TB
 | `/ssh-vault/test` | 连接自检 |
 | `/ssh-vault/reveal` | 返回未脱敏的地址与账号 |
 | `/ssh-vault/openVault` | 用系统文件管理器打开保险库目录 |
+| `/ssh-vault/diagnostics` | 诊断日志状态与最近 40 条记录 |
+| `/ssh-vault/setDiagnostics` | 开 / 关诊断日志（只接受布尔 `enabled`） |
+| `/ssh-vault/clearDiagnostics` | 清空日志文件与内存缓冲 |
+| `/ssh-vault/openLogs` | 用系统文件管理器打开日志目录 |
 
-`openVault` **不接受任何路径参数**，只能打开插件自己的保险库目录。
+`openVault` 与 `openLogs` **不接受任何路径参数**，只能打开插件自己的目录。
 
 每个请求都会在真正处理之前先过宿主 Connection 的信任栅栏：调用 `ctx.connection.requestRejection(req)`，与 `/api` 使用同一套 Host/Origin 校验与浏览器登录认证。被拒绝的请求得到 `401` / `403`，既不会接触保险库，也无法探测动作是否存在，因此 DNS rebinding 或跨站调用读不到主机数据、也触发不了探测。
 

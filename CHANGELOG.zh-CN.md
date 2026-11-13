@@ -5,6 +5,17 @@
 本文件记录所有值得注意的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 新增
+
+- **可开关的错误日志**：设置页底部新增「错误日志」卡片，**默认关闭**。打开后，工具失败、`/hosts` 命令异常、隧道事件，以及保险库与设置接口的告警都会写进 `<保险库目录>/logs/diagnostics.log`，带来源与堆栈；文件超过 512 KiB 轮转为 `.1`，`password=…` 之类的口令字段在落盘前就被替换成 `***`。开关状态保存在同目录的 `diagnostics.json`，重启后不会被悄悄关掉。同一张卡片还能打开日志目录、清空日志、查看最近 40 条记录。配置里用 `logging: true` 或 `logging: { enabled, dir, maxBytes }` 也能达到同样效果。
+- 设置接口新增四个动作：`/ssh-vault/diagnostics`、`setDiagnostics`、`clearDiagnostics`、`openLogs`。
+
+### 变更
+
+- 插件不再无条件写宿主 logger：所有日志都经过上面的开关，关闭时一条都不写。
+
 ## [2.2.0] - 2026-11-07
 
 ### 新增

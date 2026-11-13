@@ -214,7 +214,7 @@ Three invariants hold across that chain:
 
 ## Configuration
 
-The plugin has **no user-configurable options**. `config: {}` in `cordis.patch.yml` is an empty object, and the Loader entry `id` is fixed as `ssh-vault`.
+The plugin needs **no configuration**: `config: {}` in `cordis.patch.yml` can stay an empty object, and the Loader entry `id` is fixed as `ssh-vault`.
 
 Behaviour is shaped by the following:
 
@@ -224,6 +224,7 @@ Behaviour is shaped by the following:
 | Key protection | `dpapi` (Windows DPAPI, the default) or `passphrase` (scrypt-derived key, no key material on disk). `file` stores the key as plaintext and is an explicit opt-in only |
 | Timeouts | `ssh_run` defaults to 120s, adjustable, capped at 30 minutes; commands inside `/hosts` are fixed at 120s |
 | Health checks | Settings page and `/hosts` probe with a 15s timeout; the background sweep refreshes every 5 minutes |
+| Error log | **Off by default.** Turn it on with the “Error log” card at the bottom of the settings page (or `logging: true`) and tool and settings failures are written to `<vault>/logs/diagnostics.log`: with source and stack, rotated to `.1` past 512 KiB, and anything shaped like `password=…` replaced by `***`. The switch itself lives in `diagnostics.json` next to it, so it survives a restart. Use `logging: { enabled, dir, maxBytes }` to change the location or size |
 
 ## API and extension points
 
@@ -272,8 +273,12 @@ Mounted at `/ssh-vault` (`kind: 'prefix'`, **no trailing slash**). `POST` only, 
 | `/ssh-vault/test` | Reachability probe |
 | `/ssh-vault/reveal` | Return unmasked address and account |
 | `/ssh-vault/openVault` | Open the vault directory in the system file manager |
+| `/ssh-vault/diagnostics` | Error log state plus the last 40 entries |
+| `/ssh-vault/setDiagnostics` | Turn the error log on / off (boolean `enabled` only) |
+| `/ssh-vault/clearDiagnostics` | Delete the log file and the in-memory buffer |
+| `/ssh-vault/openLogs` | Open the log directory in the system file manager |
 
-`openVault` **accepts no path argument at all** — it can only open the plugin's own vault directory.
+`openVault` and `openLogs` **accept no path argument at all** — they can only open the plugin's own directories.
 
 Every request crosses the Host Connection trust fence **before** the handler looks at the method, the body or the vault: it calls `ctx.connection.requestRejection(req)`, the same Host/Origin check and browser-session authentication used by `/api`. A rejected request gets `401` / `403` and never reaches the vault, so a DNS-rebinding or cross-site call cannot read host data or trigger a probe.
 
