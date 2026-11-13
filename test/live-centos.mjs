@@ -15,7 +15,7 @@
  *   1. 基线行为（改造前即成立）：口令登录、显式 bash 包装、known_hosts 哈希、错误口令归因、
  *      超时保留输出、上传/下载回环、CRLF 观测、root-only 文件权限模型、detach + wait_for、
  *      自检命令、大输出截断、非 root 用户的 sudo 三态基线。
- *   2. 改造后新功能（lib 层 API）：默认 `bash -c` 非登录包装、`loginShell` 显式登录环境、
+ *   2. 改造后新功能（lib 层 API）：默认 `bash --norc -c` 的固定 eval runner、`loginShell` 显式登录环境、
  *      双层引号安全、command_array 逐元素引号、sudo 的 wrap/script/prime 三态、sudo 失败
  *      分类、transfer 的 sudo 读写 root-only 路径、normalize_eol、mode/owner、临时文件清理。
  *   3. SSH 隧道（lib/tunnel.js）：sshd 转发策略探测、转发建议、本地端口预检、真实 -L 转发、
@@ -87,6 +87,7 @@ const REMOTE_TEMP_FILES = [
   '/tmp/.dsh-ssh-centosregress.log',
   '/tmp/.dsh-ssh-centosregress.pid',
   '/tmp/.dsh-ssh-centosregress.log.done',
+  '/tmp/.dsh-ssh-centosregress.cmd.sh',
 ]
 
 // 临时测试账号的靶场前置条件（脚本不代为创建，避免在目标机上留下账号）：
@@ -323,13 +324,14 @@ try {
 
   // —— 2. 显式 bash 包装的基线证据：远端实际解释器是不是 bash ——
   // 登录 shell 是 zsh，但插件必须显式指定 bash 解析命令，否则 `grep '^\[login\]'` 这类
-  // 写法在不同登录 shell 下含义不同。这里记录 $0 与 $BASH_VERSION 作为证据。
+  // 写法在不同登录 shell 下含义不同。命令文本经 stdin 传入，argv 里只有固定 eval runner；
+  // $0 仍是 bash，BASH_VERSION 证明解析器。
   const shellEvidence = await call('echo "##shell0##$0"; echo "##bashver##$BASH_VERSION"; echo "##loginpasswd##$(getent passwd root | cut -d: -f7)"')
   const shell0 = /##shell0##([^\n]*)/.exec(shellEvidence.stdout)?.[1]?.trim() ?? ''
   const bashVersion = /##bashver##([^\n]*)/.exec(shellEvidence.stdout)?.[1]?.trim() ?? ''
   const passwdShell = /##loginpasswd##([^\n]*)/.exec(shellEvidence.stdout)?.[1]?.trim() ?? ''
   report(
-    '远端命令由 bash 执行（$0 与 BASH_VERSION 基线证据）',
+    '远端命令由 bash 执行（$0=bash、BASH_VERSION 有值）',
     shellEvidence.exitCode === 0 && /bash/i.test(shell0) && bashVersion.length > 0,
     `$0=${JSON.stringify(shell0)} BASH_VERSION=${JSON.stringify(bashVersion)} `
     + `passwd登录shell=${JSON.stringify(passwdShell)} ${brief(shellEvidence)}`,
@@ -359,12 +361,19 @@ try {
     brief(wrong),
   )
 
-  // —— 5. 超时仍保留已产生的输出（中断不等于失明）——
+  // —— 5. 超时仍保留已产生的输出（中断不等于失明），并单独归为 timeout ——
   const slow = await call('echo BEFORE_SLEEP_MARK; sleep 30; echo AFTER_SLEEP_MARK', { timeoutMs: 6000 })
   report(
-    '超时（6s）仍保留已产生输出',
-    slow.timedOut === true && slow.stdout.includes('BEFORE_SLEEP_MARK'),
+    '超时（6s）仍保留已产生输出，且没有执行到后续命令',
+    slow.timedOut === true
+    && slow.stdout.includes('BEFORE_SLEEP_MARK')
+    && !slow.stdout.includes('AFTER_SLEEP_MARK'),
     brief(slow),
+  )
+  report(
+    '超时归入独立的 timeout 类别（不再误归连接层）',
+    slow.category === 'timeout',
+    `category=${slow.category} ${brief(slow)}`,
   )
 
   // —— 6/7/8. 上传 / 回读 / 下载回环 ——
@@ -506,7 +515,10 @@ try {
   const zshVersion = /##zver##([^\n]*)/.exec(zshRun.stdout)?.[1]?.trim() ?? ''
   report(
     '记录声明 shell=zsh 时命令可执行（附加覆盖）',
-    zshRun.exitCode === 0 && /zsh/i.test(zsh0) && zshVersion.length > 0,
+    zshRun.exitCode === 0
+    && /zsh/i.test(zsh0) && zshVersion.length > 0
+    && zshRun.shellMode === 'stdin-eval'
+    && !zshRun.remoteShell.includes('bash'),
     `$0=${JSON.stringify(zsh0)} ZSH_VERSION=${JSON.stringify(zshVersion)} remoteShell=${zshRun.remoteShell} ${brief(zshRun)}`,
   )
 
@@ -514,32 +526,31 @@ try {
   // 二、改造后新功能（lib/ssh.js 层 API）
   // ============================================================
 
-  // —— 19. 默认包装是 bash --norc -c（非登录）：不加载 profile，stderr 干净 ——
+  // —— 19. 默认是 bash --norc -c 的固定 eval runner（非登录）：不加载 profile，stderr 干净 ——
   // RHEL/CentOS 的 bash 带 SSH_SOURCE_BASHRC 补丁：环境里有 SSH_CLIENT/SSH_CONNECTION 时，
   // **非交互** bash 也会 source ~/.bashrc。centos 的 /root/.bashrc 第 16 行 source 了不存在的
-  // clashctl 脚本，于是每条命令的 stderr 都会被塞一行报错。外层加 `--norc` 才能彻底干净。
-  // 登录 shell 是 zsh、记录写 bash；默认非登录包装既固定解析器，又不把用户 profile 的
-  // 提示/报错混进 stderr。
+  // clashctl 脚本，于是每条命令的 stderr 都会被塞一行报错。加 `--norc` 才能彻底干净。
+  // 登录 shell 是 zsh、记录写 bash；命令文本经 stdin 传入，argv 里只有 `eval "$(cat)"`。
   const defaultShell = await call('echo "##s0##$0"; echo "##ver##$BASH_VERSION"')
   report(
-    '默认包装为 bash --norc -c（非登录、不加载 profile）',
+    '默认用 bash --norc -c 执行 stdin 脚本（非登录、不加载 profile）',
     defaultShell.exitCode === 0
     && defaultShell.remoteShell === 'bash --norc -c'
-    && defaultShell.shellMode === 'argument'
+    && defaultShell.shellMode === 'stdin-eval'
     && /##s0##bash/.test(defaultShell.stdout)
     && !/\.bashrc|\.bash_profile|profile/.test(defaultShell.stderr),
     `remoteShell=${defaultShell.remoteShell} shellMode=${defaultShell.shellMode} ${brief(defaultShell)}`,
   )
 
-  // —— 20. loginShell:true 时显式走 bash -lc（需要 profile 里的 PATH 等环境时使用）——
+  // —— 20. loginShell:true 时走 bash -l -c（需要 profile 里的 PATH 等环境时使用）——
   // 这条路径按设计会加载 /etc/profile 与 ~/.bash_profile，本机 root 的坏 .bashrc 会带来
   // 噪声——那是「要登录环境」的预期代价，这里只断言包装方式与命令本身成功，不断言 stderr。
   const loginShellRun = await call('echo "##s0##$0"; echo "##home##$HOME"', { loginShell: true })
   report(
-    'loginShell:true 时显式走 bash -lc',
+    'loginShell:true 时走 bash -l -c',
     loginShellRun.exitCode === 0
-    && loginShellRun.remoteShell === 'bash -lc'
-    && loginShellRun.shellMode === 'argument'
+    && loginShellRun.remoteShell === 'bash -l -c'
+    && loginShellRun.shellMode === 'stdin-eval'
     && /##s0##bash/.test(loginShellRun.stdout)
     && /##home##\/root/.test(loginShellRun.stdout),
     `remoteShell=${loginShellRun.remoteShell} shellMode=${loginShellRun.shellMode} ${brief(loginShellRun)}`,
@@ -548,7 +559,7 @@ try {
   // —— 21. 双层引号安全：脚本经远端登录 shell（zsh）转交 bash 时不被改写 ——
   const quoting = await call(`echo '##literal##$HOME 和 $(id -un)'; echo "##expanded##$HOME"`)
   report(
-    'bash -c 双层引号安全：单引号内容不被外层登录 shell 改写',
+    'stdin eval 双层引号安全：单引号内容不被外层登录 shell 改写',
     quoting.exitCode === 0
     && quoting.stdout.includes('##literal##$HOME 和 $(id -un)')
     && /##expanded##\/root/.test(quoting.stdout),
@@ -587,7 +598,7 @@ try {
     rootWrap.exitCode === 0
     && rootWrap.stdout.trim() === 'root'
     && rootWrap.sudoMode === 'wrap'
-    // wrap 模式用 `sudo -n bash -c`，不加载 /etc/profile 与 ~/.bash_profile，
+    // wrap 模式把 `sudo -n` 前置到固定 eval 调用，不加载 /etc/profile 与 ~/.bash_profile，
     // 因此 root 家目录里坏掉的 .bashrc 不会把报错混进 stderr。
     && !/\.bashrc|\.bash_profile|\/etc\/profile/.test(rootWrap.stderr),
     brief(rootWrap),
@@ -924,30 +935,71 @@ try {
   // 四、用户报告问题的回归（真实主机）
   // ============================================================
 
-  // —— 47~49. 会话自伤：pkill -f 的模式串出现在命令文本里，先匹配到承载它的 shell ——
-  // 这是用户现场的真实成因：`bash -lc "<整段命令>"` 的 cmdline 里含模式串，pkill -f 把会话杀掉。
-  const SELF_KILL_MARK = 'DSH_SELFKILL_DEMO_20261107'
+  // —— 47~51. 命令文本不再进入 argv：pkill -f 不再误杀会话；真正的会话终止仍能归因 ——
+  // 这是用户现场的真实成因：旧实现用 `bash -lc "<整段命令>"`，pkill -f 的模式串出现在承载
+  // 它的 shell 的 cmdline 里，于是会话被杀。现在脚本经 stdin 交给固定的 `eval "$(cat)"`。
+  const SELF_KILL_MARK = 'DSH_SELFKILL_DEMO_20261113'
   const selfKill = await call(`pkill -f ${SELF_KILL_MARK}; echo AFTER_SELFKILL`)
   report(
-    'pkill -f 自伤：退出码归一化为 -1（不再是 4294967295）',
-    selfKill.exitCode === -1,
+    '命令文本不进 argv：pkill -f 不再误杀会话',
+    selfKill.exitCode === 0
+    && selfKill.stdout.includes('AFTER_SELFKILL')
+    && selfKill.category === 'none',
     brief(selfKill),
   )
+
+  const pgrepSelf = await call(`pgrep -f ${SELF_KILL_MARK} >/dev/null 2>&1; echo RC=$?`)
   report(
-    'pkill -f 自伤：分类为连接层而不是远端命令层',
-    selfKill.category === 'connection',
-    `category=${selfKill.category} ${brief(selfKill)}`,
+    'pgrep -f 也匹配不到承载命令的 shell',
+    pgrepSelf.exitCode === 0 && pgrepSelf.stdout.includes('RC=1'),
+    brief(pgrepSelf),
+  )
+
+  // 直接读进程 cmdline：命令文本（含标记）只在 stdin 的 eval 字符串里，不在 argv。
+  const ARGV_MARK = 'DSH_ARGV_MARK_20261113'
+  const argvProbe = await call(
+    `echo "##self##$(tr '\\0' ' ' < /proc/$$/cmdline)"; `
+    + `echo "##parent##$(tr '\\0' ' ' < /proc/$PPID/cmdline)"; `
+    + `echo "##mark##${ARGV_MARK}"`,
+  )
+  const selfCmdline = /##self##([^\n]*)/.exec(argvProbe.stdout)?.[1] ?? ''
+  const parentCmdline = /##parent##([^\n]*)/.exec(argvProbe.stdout)?.[1] ?? ''
+  report(
+    '内层/外层 cmdline 都不含命令文本（argv 里只有固定 eval runner）',
+    argvProbe.exitCode === 0
+    && selfCmdline.includes('eval') && !selfCmdline.includes(ARGV_MARK)
+    && parentCmdline.length > 0 && !parentCmdline.includes(ARGV_MARK),
+    `self=${JSON.stringify(selfCmdline)} parent=${JSON.stringify(parentCmdline)}`,
+  )
+  const psProbe = await call(`ps -eo args= | grep -F ${ARGV_MARK} | grep -v grep || true`)
+  report(
+    'ps 输出里看不到命令文本',
+    psProbe.exitCode === 0 && psProbe.stdout.trim().length === 0,
+    `ps=${JSON.stringify(psProbe.stdout)}`,
+  )
+
+  // 对照：真正的「会话被终止」仍然得到 -1 与明确归因。这里沿进程树找到最近的 sshd 祖先
+  // 把它杀掉——命令文本经 stdin 传入，pkill/kill 的参数不会误伤承载它的 shell。
+  const sessionKill = await call(
+    'P=$$; while [ "$P" -gt 1 ]; do '
+    + 'C=$(tr "\\0" " " < /proc/$P/cmdline 2>/dev/null); '
+    + 'case "$C" in sshd*) kill -9 "$P"; exit 0;; esac; '
+    + 'P=$(awk \'{print $4}\' /proc/$P/stat 2>/dev/null); done; exit 1',
   )
   report(
-    'pkill -f 自伤：无输出时给出「杀死了承载自己的会话」与 pkill -x / 脚本文件改法',
-    selfKill.stdout.length === 0
-    && selfKill.notes.some((note) => note.includes('自己的 SSH 会话'))
-    && selfKill.notes.some((note) => note.includes('pkill -x'))
-    && selfKill.notes.some((note) => note.includes('bash 文件')),
-    `stdout=${JSON.stringify(selfKill.stdout)} notes=${JSON.stringify(selfKill.notes)}`,
+    '真正终止 SSH 会话时仍是 -1，并归入连接层',
+    sessionKill.exitCode === -1 && sessionKill.category === 'connection',
+    brief(sessionKill),
   )
+  report(
+    '会话终止的诊断不再把 pkill -f 当成因（命令文本已不在 argv）',
+    sessionKill.notes.some((note) => note.includes('SSH 会话'))
+    && !sessionKill.notes.some((note) => note.includes('pkill -f <模式>')),
+    JSON.stringify(sessionKill.notes),
+  )
+
   // 对照：`pkill -x` 按进程名匹配，不会命中承载命令的 bash。
-  const noSelfMatch = await call('pkill -x no-such-proc-20261107; echo RC=$?')
+  const noSelfMatch = await call('pkill -x no-such-proc-20261113; echo RC=$?')
   report(
     '对照：pkill -x 不匹配任何进程时正常返回（RC=1，整体退出 0）',
     noSelfMatch.exitCode === 0 && noSelfMatch.stdout.includes('RC=1'),

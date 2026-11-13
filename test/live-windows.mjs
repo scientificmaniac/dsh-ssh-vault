@@ -292,7 +292,7 @@ try {
 
   // 正确姿势：把中文编码进纯 ASCII 的载荷（PowerShell 的 -EncodedCommand 就是），
   // 命令行本身不含非 ASCII 字节，也就绕开了代码页解析。注意载荷里必须自己固定输出编码——
-  // 插件的 shellArgv 会加 `[Console]::OutputEncoding=UTF8`，但这里是我们手工调 powershell，
+  // 插件的 powershellArgv 会加 `[Console]::OutputEncoding=UTF8`，但这里是我们手工调 powershell，
   // 不设置的话它按系统代码页输出，ssh 按 UTF-8 解码就会得到乱码。
   const chineseScript = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\n'
     + '$ProgressPreference="SilentlyContinue"\n'

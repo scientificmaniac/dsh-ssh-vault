@@ -127,21 +127,53 @@ try {
     JSON.stringify(badWorkdir.slice(0, 200)),
   )
 
-  // —— 2. 会话自伤：退出码渲染为 -1，并带执行前提示与事后结论 ——
-  const selfKillMark = 'DSH_TOOLKILL_DEMO_20261107'
+  // —— 2. 命令文本不进 argv：pkill -f 不再误杀；真正的会话终止仍渲染为 -1 ——
+  const selfKillMark = 'DSH_TOOLKILL_DEMO_20261113'
   const selfKill = await runTool('ssh_run', { host: ALIAS, command: `pkill -f ${selfKillMark}; echo AFTER` })
   check(
-    '自伤命令渲染为 [exit code: -1]，标记里不再出现 4294967295',
-    selfKill.includes('[exit code: -1]') && !selfKill.includes('[exit code: 4294967295]'),
-    JSON.stringify(selfKill.slice(-200)),
+    '命令文本不进 argv：pkill -f 正常返回、没有退出码 -1',
+    selfKill.includes('AFTER') && !selfKill.includes('[exit code: -1]'),
+    JSON.stringify(selfKill.slice(0, 200)),
   )
-  check('执行前提示 pkill -f 的自伤风险', selfKill.includes('命令里用了 `pkill -f`'), JSON.stringify(selfKill.slice(0, 200)))
-  check('事后结论指出「命令杀死了承载自己的会话」', selfKill.includes('自己的 SSH 会话'))
-  check('归因到连接层', selfKill.includes('连接层'))
-  check('提示 pkill -x 与脚本文件两条改法', selfKill.includes('pkill -x') && selfKill.includes('bash 文件'))
+  check('不再出现 pkill -f 自伤警告', !selfKill.includes('命令里用了 `pkill -f`'), JSON.stringify(selfKill.slice(0, 120)))
 
-  const noMatch = await runTool('ssh_run', { host: ALIAS, command: 'pkill -x no-such-proc-20261107; echo RC=$?' })
-  check('对照：pkill -x 正常返回且无警告', noMatch.includes('RC=1') && !noMatch.includes('命令里用了 `pkill -f`'), JSON.stringify(noMatch.slice(0, 120)))
+  // 真正的会话终止：沿进程树杀掉最近的 sshd 祖先，渲染层仍应给出 -1、连接层与原因。
+  const sessionKill = await runTool('ssh_run', {
+    host: ALIAS,
+    command: 'P=$$; while [ "$P" -gt 1 ]; do '
+      + 'C=$(tr "\\0" " " < /proc/$P/cmdline 2>/dev/null); '
+      + 'case "$C" in sshd*) kill -9 "$P"; exit 0;; esac; '
+      + 'P=$(awk \'{print $4}\' /proc/$P/stat 2>/dev/null); done; exit 1',
+  })
+  check(
+    '真正终止 SSH 会话时渲染为 [exit code: -1]',
+    sessionKill.includes('[exit code: -1]') && !sessionKill.includes('[exit code: 4294967295]'),
+    JSON.stringify(sessionKill.slice(-200)),
+  )
+  check('会话终止归因到连接层并说明原因', sessionKill.includes('连接层') && sessionKill.includes('SSH 会话'))
+  check('不再把 pkill -f 当作会话终止的原因', !sessionKill.includes('pkill -f <模式>'))
+
+  // —— 2b. 超时：结果第一行必须明确标记输出不完整 ——
+  const partial = await runTool('ssh_run', {
+    host: ALIAS,
+    command: 'echo BEFORE_TIMEOUT; sleep 30; echo AFTER_TIMEOUT',
+    // 每次调用都新建连接：3s 在这台虚拟机上偶尔还没完成握手（前一次计时过紧），
+    // 这里留足连接+首条输出的时间，让断言只验证「部分输出 + 不完整标记」。
+    timeoutMs: 8000,
+  })
+  check(
+    '超时结果首行标出「输出不完整」',
+    partial.startsWith('⚠ 输出不完整') && partial.includes('BEFORE_TIMEOUT'),
+    JSON.stringify(partial.slice(0, 160)),
+  )
+  check(
+    '超时分类为执行超时，且不包含未执行到的输出',
+    partial.includes('执行超时') && !partial.includes('AFTER_TIMEOUT'),
+    JSON.stringify(partial.slice(-200)),
+  )
+
+  const noMatch = await runTool('ssh_run', { host: ALIAS, command: 'pkill -x no-such-proc-20261113; echo RC=$?' })
+  check('对照：pkill -x 正常返回', noMatch.includes('RC=1'), JSON.stringify(noMatch.slice(0, 120)))
 
   // —— 3. 截断：工具层保留头尾、给出省略数与落盘路径 ——
   const big = await runTool('ssh_run', { host: ALIAS, command: 'seq 1 2000' })

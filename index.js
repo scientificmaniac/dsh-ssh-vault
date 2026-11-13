@@ -152,6 +152,7 @@ function describeHost(record, reveal) {
 /** 失败类别 → 文案键；渲染时给失败结果加一行分类标签。 */
 const CATEGORY_MESSAGE = {
   connection: 'err.catConnection',
+  timeout: 'err.catTimeout',
   auth: 'err.catAuth',
   sudo: 'err.catSudo',
   remote: 'err.catRemote',
@@ -163,11 +164,16 @@ const CATEGORY_MESSAGE = {
  *
  * 本地 ssh 客户端被信号终止时用 `[killed by signal: X]`（与内置 shell 工具的标记一致），
  * 否则用 `[exit code: N]`；Windows 上的负退出码已经在执行层还原成 -1 这种有符号值。
+ * 超时与取消不显示信号/退出码：那两种情况下本地客户端是按我们的要求杀掉的，结果首行
+ * 已经有 incomplete 提示与 timeout/cancelled 标记。
  *
  * @param result - 执行结果。
  * @returns 标记行数组。
  */
 function exitStatusMarkers(result) {
+  // 超时/取消时本地客户端是被我们主动杀掉的（Windows 上会看到 SIGTERM），
+  // 这不是远端命令的退出状态；首行的 incomplete 提示与 timeout/cancelled 标记已经说明清楚。
+  if (result.timedOut === true || result.aborted === true) return []
   if (typeof result.signal === 'string' && result.signal.length > 0) {
     return [`[killed by signal: ${result.signal}]`]
   }
@@ -191,6 +197,10 @@ function renderRun(result) {
   const parts = []
   const out = result.stdout ?? ''
   const err = result.stderr ?? ''
+  // 超时/取消时必须在**第一行**就说明输出不完整：半截输出（例如只列到一半的版本表）
+  // 如果当成完整结果读，会得出完全错误的结论；末尾的状态标记又可能被长输出淹没。
+  if (result.timedOut === true) parts.push(t('err.incompleteTimeout'))
+  else if (result.aborted === true) parts.push(t('err.incompleteCancelled'))
   if (out.length > 0) parts.push(out.replace(/\n+$/, ''))
   if (err.length > 0) parts.push(`[stderr]\n${err.replace(/\n+$/, '')}`)
   if (parts.length === 0) parts.push('(no output)')
@@ -807,7 +817,10 @@ export function apply(ctx, config = {}) {
       + 'The command runs through the remote shell named in the host record (bash by default, cmd or powershell for '
       + 'Windows targets). The connection address, account, and password come from the encrypted vault, so refer to the '
       + 'host by alias only. A non-zero remote exit is reported as an [exit code: N] marker rather than an error. '
-      + 'Output received before a timeout or a cancelled call is still returned.',
+      + 'On POSIX targets the script is fed over stdin to a fixed `eval "$(cat)"` runner, so the command text '
+      + 'never appears in the remote argv (pkill -f / ps | grep cannot match the shell). '
+      + 'When the call times out or is cancelled, the result starts with an INCOMPLETE OUTPUT notice: the output may be missing '
+      + 'later parts and the remote command may still be running.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -844,7 +857,7 @@ export function apply(ctx, config = {}) {
         },
         sudo: {
           description: 'Raise the command to root. true selects the best form automatically; a string picks it explicitly: '
-            + '"wrap" runs the whole command as sudo -n bash -lc \'...\' (needs passwordless sudo or root), "script" writes the command '
+            + '"wrap" prepends `sudo -n` to the fixed eval runner and runs the stdin script as root (needs passwordless sudo or root), "script" writes the command '
             + 'to a temporary script and runs it with sudo, which is the safe choice for heredocs, pipelines, background jobs and '
             + 'multi-line root flows, and "prime" only pre-warms the sudo cache while the command still writes its own sudo. '
             + 'The password always comes from the vault (stored sudoPassword, falling back to the login password) and never enters '
@@ -873,9 +886,10 @@ export function apply(ctx, config = {}) {
         },
         login_shell: {
           type: 'boolean',
-          description: 'Run the command through a login shell (bash -lc) instead of a plain one (bash -c). Login shells read '
-            + '/etc/profile and your profile files, which is what you want when the PATH you need is defined there; plain shells are '
-            + 'the default because profile scripts can emit their own noise into stderr and turn a clean command into a confusing one.',
+          description: 'Run the script through a login shell (bash -l -c with the fixed eval runner) instead of a plain non-login one '
+            + '(bash --norc). Login shells read /etc/profile and your profile files, which is what you want when the PATH you need is '
+            + 'defined there; plain shells are the default because profile scripts can emit their own noise into stderr and turn a clean '
+            + 'command into a confusing one.',
         },
         timeoutMs: {
           type: 'number',
@@ -943,16 +957,6 @@ export function apply(ctx, config = {}) {
       if (typeof args.command === 'string'
         && /net\s+accounts|account\s*lockout|lockout\s*threshold|net\s+user\s+\S+\s+\/active:no|usermod\s+-L|passwd\s+-l|faillock/i.test(args.command)) {
         notes.push(t('note.accountLockRisk'))
-      }
-
-      // `pkill -f` / `killall -f` 在这条执行链上天生自伤：命令文本本身就是远端 shell 的
-      // 启动参数（`bash --norc -c '<command>'`），承载它的 shell 的 cmdline 里就有这段
-      // 文本，模式串会先匹配到它自己。执行前提醒，比事后只看到一个 -1 有用得多。
-      const selfKillProbe = typeof args.command === 'string'
-        ? args.command
-        : Array.isArray(args.command_array) ? args.command_array.join(' ') : ''
-      if (/pkill\s+(?:-\S+\s+)*-f\b|pkill\s+--full\b|killall\s+-f\b/i.test(selfKillProbe)) {
-        notes.push(t('note.selfKillRisk'))
       }
 
       const sudoPlan = await resolveSudoPlan(args, record)
@@ -1149,7 +1153,9 @@ export function apply(ctx, config = {}) {
       const detail = result.stderr?.trim()
       const notes = Array.isArray(result.notes) ? result.notes : []
       const categoryKey = typeof result.category === 'string' ? CATEGORY_MESSAGE[result.category] : undefined
-      return [head, detail, ...(categoryKey === undefined ? [] : [t(categoryKey)]), ...notes, ...exitStatusMarkers(result)]
+      // 传输超时同样不是「完成但失败」：文件可能只传了一半，必须让调用方看到这条置顶提示。
+      const incomplete = result.timedOut === true ? t('err.incompleteTimeout') : undefined
+      return [incomplete, head, detail, ...(categoryKey === undefined ? [] : [t(categoryKey)]), ...notes, ...exitStatusMarkers(result)]
         .filter((line) => typeof line === 'string' && line.length > 0).join('\n')
     },
   })))

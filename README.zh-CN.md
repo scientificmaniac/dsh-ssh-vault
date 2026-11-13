@@ -103,13 +103,14 @@ dsh plugin --profile desktop list
 
 `ssh_run` 的几条约定：
 
-- **显式 shell 包装。** POSIX 目标默认用 `bash --norc -c '<command>'`：命令固定由 bash 解析一次，不会落到远端登录 shell（fish/zsh）上被改写成另一个意思。`login_shell: true` 改用 `bash -lc`（需要 profile 里定义的 PATH 时）。返回里的 `remoteShell` 会说明这次实际用了什么。
+- **显式 shell 包装。** POSIX 目标默认用 `bash --norc -c 'eval "$(cat)"'`：脚本经 stdin 传入、由目标 shell 里的 `eval` 执行——仍然只由 bash 解析一次，不会落到远端登录 shell（fish/zsh）上被改写；但命令文本不再进入 argv，`pkill -f` 的模式串匹配不到承载它的 shell，也不会有临时文件残留。`login_shell: true` 改用 `bash -l -c`（需要 profile 里定义的 PATH 时）。返回里的 `remoteShell` 会说明这次实际用了什么。
   `--norc` 不是可有可无的：RHEL/CentOS 的 bash 打了 `SSH_SOURCE_BASHRC` 补丁，SSH 会话里**非交互** bash 也会 source `~/.bashrc`，用户 .bashrc 里一条失败的 source 就会让每条命令的 stderr 多一行噪声，进而干扰失败诊断。
 - **命令数组。** `command_array: ["find", ".", "-name", "*.log"]` 会逐元素引号化，远端 shell 不做分词、通配或变量展开，彻底避开双层 shell 的引号陷阱。
 - **工作目录。** `workdir: "/srv/app"` 让命令在该目录执行：`cd`（POSIX）或 `Set-Location`（PowerShell）被并进同一段脚本；用 `sudo` 时先提权再进入目录，因此 root-only 目录也能进。`cd` 失败会直接终止命令，不会悄悄落到登录目录里执行。cmd 目标会明确拒绝 `workdir`：Windows sshd 会把整段命令再包一层 `cmd.exe /c "..."`，带引号的 `cd` 会被拆开——这类目标请自己在 command 里写 `cd /D <目录> && <命令>`。
-- **sudo 三态。** `sudo: true` 自动选形态；`sudo: "wrap"` 把整条命令包成 `sudo -n bash -c '...'`；`sudo: "script"` 写临时脚本再以 root 执行——heredoc、管道、后台任务、多行流程都不会在提权边界上变形，脚本执行完即删，口令经 base64 管道喂给 `sudo -S`，两端命令行与远端 `ps` 都看不到；`sudo: "prime"` 只预热缓存，命令里照旧自己写 sudo。口令始终来自保险库。用了任一形态后**不要**在命令里再写 sudo。
+- **sudo 三态。** `sudo: true` 自动选形态；`sudo: "wrap"` 把 `sudo -n` 前置到固定的 `eval "$(cat)"` 调用，脚本以 root 执行而命令文本仍不进 argv；`sudo: "script"` 写临时脚本再以 root 执行——heredoc、管道、后台任务、多行流程都不会在提权边界上变形，脚本执行完即删，口令经 base64 管道喂给 `sudo -S`，两端命令行与远端 `ps` 都看不到；`sudo: "prime"` 只预热缓存，命令里照旧自己写 sudo。口令始终来自保险库。用了任一形态后**不要**在命令里再写 sudo。
 - **错误分类。** 失败时附一行类别标签（连接 / 认证 / sudo / 远端命令 / 输出截断）；sudo 失败还会细分「需要密码 / 不在 sudoers / 没有 sudo」并给出修复命令。
-- **杀死自己会话的命令会被直接点破。** 整段命令本身就是远端 shell 的启动参数，所以 `pkill -f` 的模式串也会出现在承载它的 shell 的 cmdline 里。过去这种自伤会显示成 `4294967295`（实际是 `-1`），现在渲染为 `[exit code: -1]`、归类为连接层、标明原始值，并给出 `pkill -x` / 改用脚本文件两条改法；执行前也会先提醒一次风险。
+- **杀死自己会话的命令：常见成因已根治，真实会话终止仍会诊断。** 命令文本不再进入 argv，所以 `pkill -f` / `pgrep -f` / `ps aux | grep <词>` 的模式串匹配不到承载命令的 shell；真正的会话终止（杀掉 sshd、重启 sshd 或网络）仍显示为 `[exit code: -1]`，标明原始值 `0xFFFFFFFF` 并归入连接层。
+- **输出不完整会被明确标注。** 超时或被取消时，结果第一行就是本地化的 `⚠ 输出不完整 / INCOMPLETE OUTPUT`：内容只是部分输出，远端命令可能仍在运行；类别也单独归为「执行超时」，不再被当成普通的远端失败。
 - **大输出落盘。** 超过上限时响应保留**开头与结尾**，正文中间标出省略了多少字符；完整内容写进保险库目录下的 `outputs/`，并把绝对路径附在结果里。
 
 `ssh_transfer` 在 scp 之上补了四件事：`sudo: true` 读写 root-only 文件（远端临时文件中转 + 自动清理）；`normalize_eol: true` 上传前把 CRLF 规范成 LF（Windows 上写的脚本在远端不会报 `$'\r': 未找到命令`，二进制文件自动跳过）；`mode` / `owner` / `preserve_mode` 设置远端权限与属主；目录复制默认按**内容**语义——`flatten`（默认 `true`）把源目录的内容放进目标目录，目标已存在就合并，因此 `src/` → `/root/app` 落在 `/root/app/*` 而不是 `/root/app/src/*`，也不用再 `cp -f src/* . && rm -rf src` 收拾。需要 scp 原本的嵌套语义时传 `flatten: false`。
@@ -359,7 +360,8 @@ Windows OpenSSH 对**已锁定**的账户是直接断开连接，而不是回 `P
 ### 输出与超时
 
 - `ssh_run` 单次输出默认上限 200000 字符；超出上限时响应保留**开头与结尾**并在中间标出省略了多少字符——完整 stdout / stderr 会写进保险库目录下的 `outputs/`，响应里附上绝对路径，摘要与证据都不丢
-- `ssh_run` 的 `command` 作为 `-c` 参数传给远端 shell 时受远端命令行长度限制，超过 64 KiB 会自动改走 stdin（`bash -s`），返回里的 `remoteShell` 会如实反映走了哪条路
+- 命令超时或被取消时，结果首行是 **输出不完整** 的明确提示：部分输出照常保留，但会标明命令未跑完、远端进程可能仍在运行
+- `ssh_run` 的脚本经 ssh 的 stdin 传入，不再受远端命令行长度限制；远端 argv 里只有固定的 `eval "$(cat)"`，命令文本不会出现在 `ps` 里
 - `/hosts` 里每条命令最多回显 40 行
 - `/hosts` 的命令超时固定 120 秒，不可配置
 - 前台工具调用**没有流式输出**：输出在命令结束后一次性出现。需要边跑边看请用 `run_in_background`，输出进 job 卡片

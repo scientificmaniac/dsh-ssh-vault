@@ -2,7 +2,7 @@
  * 单元回归：shell 翻译、八进制转义解码与失败归因。不需要真实主机。
  * 运行：node test/diagnose.mjs
  */
-import { decodeOctalEscapes, diagnose, shellArgv } from '../lib/ssh.js'
+import { decodeOctalEscapes, diagnose, resolveShellInvocation } from '../lib/ssh.js'
 
 let passed = 0
 const failures = []
@@ -21,17 +21,25 @@ const notesFor = (stderr, timedOut = false, target = {}) => diagnose(
 ).join('\n')
 
 // —— shell 翻译 ——
-check('shell 默认 bash', shellArgv(undefined).join(' ') === 'bash -s', shellArgv(undefined).join(' '))
-check('shell cmd', shellArgv('cmd').join(' ') === 'cmd.exe /Q /D', shellArgv('cmd').join(' '))
-check('shell cmd.exe', shellArgv('cmd.exe').join(' ') === 'cmd.exe /Q /D')
-// 有脚本时必须走 /C 参数模式：不带 /C 的 cmd 会进交互模式，banner 与提示符污染 stdout。
-const cmdWithScript = shellArgv('cmd', 'dir')
-check('shell cmd 带脚本走 /Q /D /C', cmdWithScript.slice(0, 4).join(' ') === 'cmd.exe /Q /D /C', cmdWithScript.join(' '))
-check('shell cmd 脚本作为单个参数', cmdWithScript[4] === 'dir', JSON.stringify(cmdWithScript))
-check('shell powershell', shellArgv('powershell').join(' ').startsWith('powershell -NoProfile'), shellArgv('powershell').join(' '))
-check('shell pwsh', shellArgv('pwsh').join(' ').startsWith('pwsh -NoProfile'))
-check('shell /bin/sh', shellArgv('/bin/sh').join(' ') === '/bin/sh -s')
-check('shell 自定义路径', shellArgv('/usr/bin/zsh').join(' ') === '/usr/bin/zsh -s')
+// POSIX：argv 里只有固定的 `eval "$(cat)"`，命令文本经 stdin 传入；
+// 因此远程 ps 看不到命令文本，`pkill -f` 也不会再匹配到承载它的 shell。
+const bashInv = resolveShellInvocation(undefined, 'echo hi\n')
+check('shell 默认 bash', bashInv.argv[0] === 'bash' && bashInv.argv[1] === '--norc' && bashInv.argv[2] === '-c', bashInv.argv.join(' '))
+check('POSIX argv 只有固定 eval runner', bashInv.argv.at(-1) === "'eval \"$(cat)\"'", bashInv.argv.at(-1))
+check('POSIX 命令文本不进 argv', !bashInv.argv.join(' ').includes('echo hi'), bashInv.argv.join(' '))
+check('POSIX 命令经 stdin 传入', bashInv.mode === 'stdin-eval' && bashInv.input === 'echo hi\n', JSON.stringify({ mode: bashInv.mode, input: bashInv.input }))
+check('POSIX 登录 shell 走 -l -c', resolveShellInvocation(undefined, 'id\n', { login: true }).remoteShell === 'bash -l -c')
+check('POSIX sudo wrap 把 sudo -n 前置到外层', resolveShellInvocation(undefined, 'id\n', { sudoWrap: true }).remoteShell === 'sudo -n bash --norc -c')
+check('shell /bin/sh', resolveShellInvocation('/bin/sh', 'echo hi\n').argv[0] === '/bin/sh')
+check('shell 自定义路径', resolveShellInvocation('/usr/bin/zsh', 'echo hi\n').argv[0] === '/usr/bin/zsh')
+// cmd / PowerShell 仍走原生参数。
+const cmdInv = resolveShellInvocation('cmd', 'dir')
+check('shell cmd', resolveShellInvocation('cmd', '').argv.join(' ') === 'cmd.exe /Q /D', resolveShellInvocation('cmd', '').argv.join(' '))
+check('shell cmd.exe', resolveShellInvocation('cmd.exe', '').argv.join(' ') === 'cmd.exe /Q /D')
+check('shell cmd 带脚本走 /Q /D /C', cmdInv.argv.slice(0, 4).join(' ') === 'cmd.exe /Q /D /C', cmdInv.argv.join(' '))
+check('shell cmd 脚本作为单个参数', cmdInv.argv[4] === 'dir', JSON.stringify(cmdInv.argv))
+check('shell powershell', resolveShellInvocation('powershell', '').argv.join(' ').startsWith('powershell -NoProfile'), resolveShellInvocation('powershell', '').argv.join(' '))
+check('shell pwsh', resolveShellInvocation('pwsh', '').argv.join(' ').startsWith('pwsh -NoProfile'))
 
 // —— 八进制转义解码 ——
 const escaped = String.raw`E:\\ai project\\\346\223\215\344\275\234\\id_rsa`

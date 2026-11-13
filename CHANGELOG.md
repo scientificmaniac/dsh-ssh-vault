@@ -19,6 +19,13 @@ All notable changes to this project are documented here. The format follows
 
 - The plugin no longer writes to the host logger unconditionally: all of its logging goes through the switch above, and nothing at all is written while it is off.
 
+### Fixed
+
+- **POSIX commands no longer put the command text in the remote argv**: the old `bash --norc -c '<command>'` made every `pkill -f` / `pgrep -f` / `ps aux | grep <word>` pattern match the shell carrying the command, killing the session (the symptom was no output plus exit code `-1`). The remote invocation is now the fixed `bash --norc -c 'eval "$(cat)"'`; the script arrives over stdin and is evaluated inside that shell, so the command text never appears in argv — and there is no temp file to leak or clean up. `sudoMode: "prime"` passwords, which used to travel in that argv too, no longer do.
+- **A real session kill is still diagnosed**: killing sshd, restarting it or bouncing the network still produces `[exit code: -1]` with the raw `0xFFFFFFFF` value named and a connection-layer classification; the old "`pkill -f` may have killed itself" warning was removed because it is no longer true.
+- **Timeouts and cancellations now label their output as incomplete**: the result starts with a localised `⚠ 输出不完整 / INCOMPLETE OUTPUT` notice, keeps the partial output, and is classified as `timeout` instead of a generic failure. This prevents a half-finished listing (for example a partially printed version table) from being read as a complete result.
+- **`detach` no longer puts the command text in argv**: the detached command is base64-decoded into a 0600 command file under `/tmp` and executed from that file; the fixed `setsid sh -c` wrapper only sees the file path.
+
 ## [2.2.0] - 2026-11-07
 
 ### Added

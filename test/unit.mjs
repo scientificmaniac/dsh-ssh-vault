@@ -6,7 +6,7 @@
  *
  * 运行：node test/unit.mjs
  */
-import { buildDetachScript, buildScpArgs, buildSshArgs, buildSudoScriptRunner, buildSudoWrapCommand, buildWaitScript, classifySudoFailure, diagnose, diagnoseCategory, looksLikeNaturalLanguage, normalizeExitCode, parseExitStatus, parseShellList, parseSudoProbe, pickShell, primaryShell, quoteArgv, renderTerminalBlock, runProcess, shellKind, sudoPrelude, withContentsPath, withWorkdir, workdirPrefix } from '../lib/ssh.js'
+import { buildDetachScript, buildScpArgs, buildSshArgs, buildSudoScriptRunner, buildWaitScript, classifySudoFailure, diagnose, diagnoseCategory, looksLikeNaturalLanguage, normalizeExitCode, parseExitStatus, parseShellList, parseSudoProbe, pickShell, primaryShell, quoteArgv, renderTerminalBlock, resolveShellInvocation, runProcess, shellKind, sudoPrelude, withContentsPath, withWorkdir, workdirPrefix } from '../lib/ssh.js'
 
 let passed = 0
 const failures = []
@@ -115,23 +115,27 @@ check('powershell 合并 error 流', psDecoded.includes('} 2>&1 | ForEach-Object
 check('powershell 压平 ErrorRecord', psDecoded.includes('[error] '), JSON.stringify(psDecoded.slice(-160)))
 check('powershell 关闭进度条', psDecoded.includes('$ProgressPreference'), JSON.stringify(psDecoded.slice(0, 120)))
 
-// POSIX 现在显式包装成 `<shell> -lc '<command>'`：不经远端登录 shell，命令作为**一个**
-// 参数传过去。这解决「主机记录写 bash、手工登录却是 fish/zsh」时命令被另一种 shell 改写。
+// POSIX 不再把命令文本塞进 `-c '<command>'`：argv 里只有固定的 `eval "$(cat)"`，
+// 用户脚本经 stdin 传入。命令文本因此不会出现在远端 argv / ps 里。
 const posixArgs = buildSshArgs({
   record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'echo hi\n',
 })
-check('posix 显式 --norc -c 包装', posixArgs.slice(-4, -1).join(' ') === 'bash --norc -c', posixArgs.slice(-4).join(' '))
-check('posix 命令作为单个参数传入', posixArgs[posixArgs.length - 1] === "'echo hi\n'", JSON.stringify(posixArgs.slice(-1)))
+const posixRunnerArg = posixArgs[posixArgs.length - 1]
+check('posix 外层是 --norc -c', posixArgs.slice(-4, -1).join(' ') === 'bash --norc -c', posixArgs.slice(-4).join(' '))
+check('posix argv 只有固定 eval runner', posixRunnerArg === "'eval \"$(cat)\"'", posixRunnerArg)
+check('posix 命令文本不进 argv', !posixArgs.join(' ').includes('echo hi'), posixArgs.slice(-1).join(' '))
+const posixInvocation = resolveShellInvocation('bash', 'echo hi\n')
+check('posix 执行层返回 stdin 脚本', posixInvocation.input === 'echo hi\n' && posixInvocation.mode === 'stdin-eval', JSON.stringify(posixInvocation.mode))
+check('posix login 用 -l -c', resolveShellInvocation('bash', 'echo hi\n', { login: true }).remoteShell === 'bash -l -c')
 const loginArgs = buildSshArgs({
   record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'echo hi\n', loginShell: true,
 })
-check('loginShell 走 -lc', loginArgs.slice(-3, -1).join(' ') === 'bash -lc', loginArgs.slice(-3).join(' '))
+check('loginShell 走 bash -l -c', loginArgs.slice(-4, -1).join(' ') === 'bash -l -c', loginArgs.slice(-4).join(' '))
+check('loginShell 命令文本仍不进 argv', loginArgs[loginArgs.length - 1] === "'eval \"$(cat)\"'", loginArgs[loginArgs.length - 1])
 const trickyArgs = buildSshArgs({
   record: passwordRecord, knownHostsPath, connectTimeoutSec: 10, remoteCommand: "grep '^\\[login\\]' /var/log/x",
 })
-const wrappedTricky = trickyArgs[trickyArgs.length - 1]
-check('posix 复杂引号被整体包裹', wrappedTricky.startsWith("'") && wrappedTricky.endsWith("'"), wrappedTricky)
-check("posix 复杂引号用 '\\'' 形式转义", wrappedTricky.includes(`'\\''`), wrappedTricky)
+check('posix 复杂命令也不进 argv', !trickyArgs.join(' ').includes('[login]'), trickyArgs.slice(-1).join(' ').slice(0, 120))
 const cmdArgs = buildSshArgs({
   record: { ...passwordRecord, shell: 'cmd' }, knownHostsPath, connectTimeoutSec: 10, remoteCommand: 'dir\n',
 })
@@ -241,10 +245,10 @@ const sessionKilledNotes = diagnose(
   { port: 22 },
 )
 check('负退出码提示「可能终止了自身 SSH 会话」',
-  sessionKilledNotes.some((note) => note.includes('自己的 SSH 会话') && note.includes('4294967295')),
+  sessionKilledNotes.some((note) => note.includes('SSH 会话') && note.includes('4294967295')),
   JSON.stringify(sessionKilledNotes))
 check('超时中断不误报会话自毁',
-  !diagnose({ exitCode: -1, timedOut: true, stderr: '' }, { ms: 1000 }).some((note) => note.includes('自己的 SSH 会话')),
+  !diagnose({ exitCode: -1, timedOut: true, stderr: '' }, { ms: 1000 }).some((note) => note.includes('SSH 会话')),
   JSON.stringify(diagnose({ exitCode: -1, timedOut: true, stderr: '' }, { ms: 1000 })))
 
 // —— workdir：三种 shell 各自的前缀，且都带失败即退出 ——
@@ -294,9 +298,16 @@ check('command_array 空元素报错', badArgvThrew === true)
 check('command_array 通配符留在引号内', quoteArgv(['ls', '*.log']).includes("'*.log'"), quoteArgv(['ls', '*.log']))
 
 // —— sudo 三态 ——
-const sudoWrapScript = buildSudoWrapCommand('apt-get update && echo done')
-check('sudo wrap 用 sudo -n bash -c', sudoWrapScript.startsWith('sudo -n bash -c '), sudoWrapScript)
-check('sudo wrap 整体包裹命令', sudoWrapScript.endsWith("'apt-get update && echo done'"), sudoWrapScript)
+// wrap 不再把命令拼成 `sudo -n bash -c '<command>'`（那会把命令文本放进 argv），
+// 而是把 `sudo -n` 前置到固定 eval runner 的外层 argv。
+const sudoWrapInvocation = resolveShellInvocation('bash', 'apt-get update && echo done\n', { sudoWrap: true })
+check('sudo wrap 外层是 sudo -n 前置',
+  sudoWrapInvocation.argv.slice(0, 2).join(' ') === 'sudo -n'
+  && sudoWrapInvocation.remoteShell === 'sudo -n bash --norc -c',
+  `${sudoWrapInvocation.remoteShell} ${sudoWrapInvocation.argv.join(' ')}`)
+check('sudo wrap 的 argv 只有固定 runner',
+  sudoWrapInvocation.argv.at(-1) === "'eval \"$(cat)\"'" && !sudoWrapInvocation.argv.join(' ').includes('apt-get update'),
+  JSON.stringify(sudoWrapInvocation.argv))
 const sudoRunner = buildSudoScriptRunner({ command: 'cat > /etc/x <<EOF\nhi\nEOF', password: 'pw', token: 'abc' })
 check('sudo script 走 base64 落地', sudoRunner.includes('base64 -d'), sudoRunner)
 check('sudo script 解码后补换行', sudoRunner.includes('| base64 -d; echo; }'), sudoRunner)
@@ -316,7 +327,7 @@ check('sudo 探测解析 none', parseSudoProbe('##sudo##none\n') === 'none')
 
 // —— 错误分类 ——
 check('分类 连接层', diagnoseCategory({ exitCode: 255, stderr: 'Connection timed out' }, {}) === 'connection')
-check('分类 超时归连接层', diagnoseCategory({ exitCode: null, timedOut: true, stderr: '' }, {}) === 'connection')
+check('分类 超时单独归类', diagnoseCategory({ exitCode: null, timedOut: true, stderr: '' }, {}) === 'timeout')
 check('分类 认证', diagnoseCategory({ exitCode: 255, stderr: 'Permission denied (publickey)' }, { authType: 'key' }) === 'auth')
 check('分类 sudo', diagnoseCategory({ exitCode: 1, stderr: 'sudo: a password is required' }, {}) === 'sudo')
 check('分类 远端命令', diagnoseCategory({ exitCode: 2, stderr: '' }, {}) === 'remote')
@@ -337,7 +348,9 @@ const detachScript = buildDetachScript({ command: 'apt -y full-upgrade', token: 
 check('detach 用 setsid 脱离会话', detachScript.includes('setsid sh -c'), detachScript)
 check('detach 重定向输出到日志', detachScript.includes('> "$DSH_LOG" 2>&1'), detachScript)
 check('detach 写 pid 文件', detachScript.includes('echo $! > "$DSH_PID"'), detachScript)
-check('detach 安全引用命令', detachScript.includes("'apt -y full-upgrade'"), detachScript)
+check('detach 命令经 base64 落到临时文件', detachScript.includes('base64 -d > "$DSH_CMD"'), detachScript)
+check('detach 命令文本不进 argv', !detachScript.includes('apt -y full-upgrade'), detachScript)
+check('detach 用文件路径执行并清理', detachScript.includes('sh "$1"') && detachScript.includes('rm -f "$1"'), detachScript)
 check('detach 告知存活查询方式', detachScript.includes('ALIVE'), detachScript)
 
 // —— 对话里的终端卡片：从展示文本中取出退出状态 ——
