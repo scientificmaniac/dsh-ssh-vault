@@ -9,8 +9,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 [![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4f7cff.svg)](https://github.com/deepseek-ai)
-[![Version](https://img.shields.io/badge/version-2.2.0-informational.svg)](package.json)
-[![Tests](https://img.shields.io/badge/test-504%20cases-brightgreen.svg)](test)
+[![Version](https://img.shields.io/badge/version-2.3.0-informational.svg)](package.json)
+[![Tests](https://img.shields.io/badge/test-589%20cases-brightgreen.svg)](test)
 
 </div>
 
