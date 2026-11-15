@@ -43,6 +43,7 @@ import {
 } from './lib/tunnel.js'
 import { API_PREFIX, SETTINGS_PROBE_TIMEOUT_MS, createVaultApi } from './lib/vault-api.js'
 import { Vault, defaultVaultDir, maskHost, maskUser } from './lib/vault.js'
+import { createVmControlCompat } from './lib/vm-control-compat.js'
 
 /** 插件名（同时是 Loader 行的 id）。 */
 export const name = 'ssh-vault'
@@ -353,6 +354,49 @@ export function apply(ctx, config = {}) {
     // 但「密钥保护方式」仍会出现在设置页与工具结果里，信息并没有消失。
     logger: diagnostics.logger,
   })
+
+  // —— 与同目录下 dsh-vm-control 的兼容层 ——
+  //
+  // 这一层**不激活**对方插件：它只读清单、校验入口导出、按需 import 一次以确认「能加载」，
+  // 然后提供一个把虚拟机 SSH 字段写进本保险库的接口。这样无论宿主先加载谁都不会撞名，
+  // 因为本插件从不注册 `vm_*` 工具、`/vm-control` 路由或 `/vm` 命令。
+  //
+  // 配置（全部可选）：
+  //   vmControl: {
+  //     enabled,            // false 时完全休眠，原有 SSH 功能照旧
+  //     dir,                // 显式插件目录；缺省时按包根与相邻目录探测
+  //     searchRoots,        // 额外搜索根
+  //     aliasPolicy,        // 默认别名冲突策略：reuse | suffix | overwrite
+  //     allowOverwrite,     // 是否允许 overwrite（仍要求请求带 confirm=true）
+  //     cacheTtlMs, retryTtlMs, probeModule
+  //   }
+  const vmControlConfig = typeof config.vmControl === 'object' && config.vmControl !== null ? config.vmControl : {}
+  const vmCompat = createVmControlCompat({
+    enabled: config.vmControl !== false && vmControlConfig.enabled !== false,
+    dir: typeof vmControlConfig.dir === 'string' && vmControlConfig.dir.trim().length > 0
+      ? vmControlConfig.dir
+      : (typeof process.env.DSH_VM_CONTROL_DIR === 'string' && process.env.DSH_VM_CONTROL_DIR.length > 0
+        ? process.env.DSH_VM_CONTROL_DIR
+        : undefined),
+    searchRoots: Array.isArray(vmControlConfig.searchRoots) ? vmControlConfig.searchRoots : [],
+    store: vault,
+    logger: diagnostics.logger,
+    diagnostics,
+    aliasPolicy: typeof vmControlConfig.aliasPolicy === 'string' ? vmControlConfig.aliasPolicy : 'reuse',
+    allowOverwrite: vmControlConfig.allowOverwrite !== false,
+    cacheTtlMs: Number.isFinite(vmControlConfig.cacheTtlMs) ? vmControlConfig.cacheTtlMs : undefined,
+    retryTtlMs: Number.isFinite(vmControlConfig.retryTtlMs) ? vmControlConfig.retryTtlMs : undefined,
+    probeModule: vmControlConfig.probeModule !== false,
+    // 服务探针惰性求值：webServer / commands 往往比本插件晚就绪，启动时快照会得到
+    // 一份永久过时的结论。每次查询时现取，加载顺序因此不需要被假设。
+    serviceProbe: () => ({
+      tools: ctx.tools !== undefined,
+      settings: ctx.get('settings') !== undefined,
+      webServer: ctx.get('webServer') !== undefined,
+      commands: ctx.get('commands') !== undefined,
+    }),
+  })
+  ctx.effect(() => () => vmCompat.dispose(), 'ssh-vault: release vm-control compat cache')
 
   // —— 界面语言：跟随 DSH 的「设置 → 常规 → 语言」——
   //
@@ -1509,6 +1553,7 @@ export function apply(ctx, config = {}) {
       probe: probeHost,
       diagnostics,
       logger: diagnostics.logger,
+      vmCompat,
       // 这条路由能读写凭据与私钥，必须和 /api 一样过宿主的 Connection 信任栅栏：
       // Host/Origin 校验（防 DNS rebinding / 跨站调用）+ 浏览器登录认证。
       // connection 服务缺失时（非 Web 组合）退回放行，由宿主自身的鉴权层兜底。

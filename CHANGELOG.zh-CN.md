@@ -5,6 +5,24 @@
 本文件记录所有值得注意的变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.4.0] - 2026-11-15
+
+### 新增
+
+- **与 `dsh-vm-control` 的兼容层**：识别同目录（或 `vmControl.dir` / `DSH_VM_CONTROL_DIR`）下的虚拟机插件，校验包名、版本区间（`>=1.0.0 <2.0.0`）、ESM 形态、`engines.node` 与入口导出（`name` / `apply` / `inject: ['tools']`），但**不激活**它——不注册 `vm_*` 工具、`/vm-control` 路由或 `/vm` 命令，因此宿主同时加载两者不会撞名，加载顺序也无关。
+- 新增设置接口 `POST /ssh-vault/vmStatus` 与 `POST /ssh-vault/vmImport`：前者返回发现结果、契约问题与服务可用性，后者按白名单字段把虚拟机的 SSH 接入写进保险库。
+- 导入的冲突语义：`reuse`（默认，拒绝并给出候选别名）、`suffix`（自动避让）、`overwrite`（需 `confirm: true`，且不继承旧记录的 sudo 口令 / 凭据引用 / 绑定地址）；同一台虚拟机（`vmx`）重复导入是更新，换别名会得到 `already-imported`。
+- 设置页新增「虚拟机联动」一行，显示识别状态并可「重新检查」；装完虚拟机插件无需重启 DSH。
+- 可选服务（`webServer` / `commands` / `settings`）缺失时只做提示；同一插件出现多份副本时给出 `duplicate-install` 警告并列出实际使用的那一份。
+
+### 变更
+
+- `list` 响应新增附加字段 `vmControl`（兼容状态）；原有字段与形状不变。
+
+### 说明
+
+- 兼容层失败只影响 `vmStatus` / `vmImport`：工具、`/hosts`、设置页与原来的 `/ssh-vault/save` 均不受影响；`vmControl: false` 可完全关闭。
+
 ## [2.3.0] - 2026-11-13
 
 ### 新增

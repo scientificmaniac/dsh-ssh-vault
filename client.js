@@ -100,6 +100,14 @@ window.__ModuleLoader__.load({
         diagEmpty: '暂无日志记录。',
         diagHint: '口令不会写进日志：形如 password=… 的内容会被替换成 ***。',
         diagBusy: '处理中…',
+        vmCompat: '虚拟机联动',
+        vmCompatReady: 'dsh-vm-control v{version} · 导入可用',
+        vmCompatUnavailable: 'dsh-vm-control 未安装 · 手动添加不受影响',
+        vmCompatIncompatible: 'dsh-vm-control 不兼容 · 已拒绝自动对接',
+        vmCompatDegraded: 'dsh-vm-control v{version} · 有警告',
+        vmCompatDisabled: '已由配置关闭',
+        vmCompatRecheck: '重新检查',
+        vmCompatChecking: '检查中…',
       },
       en: {
         sectionTitle: 'SSH Connections',
@@ -183,6 +191,14 @@ window.__ModuleLoader__.load({
         diagEmpty: 'No entries yet.',
         diagHint: 'Passwords are never logged: anything shaped like password=… is replaced with ***.',
         diagBusy: 'Working…',
+        vmCompat: 'VM integration',
+        vmCompatReady: 'dsh-vm-control v{version} · import available',
+        vmCompatUnavailable: 'dsh-vm-control not installed · manual setup unaffected',
+        vmCompatIncompatible: 'dsh-vm-control incompatible · automatic adaptation refused',
+        vmCompatDegraded: 'dsh-vm-control v{version} · warnings',
+        vmCompatDisabled: 'disabled by configuration',
+        vmCompatRecheck: 'Re-check',
+        vmCompatChecking: 'Checking…',
       },
     }
     // —— 界面语言：交给宿主的 locale 服务 ——
@@ -443,6 +459,25 @@ window.__ModuleLoader__.load({
       return badges
     }
 
+    /**
+     * 虚拟机兼容状态的一行文字。
+     *
+     * 状态由 Host 侧的兼容层给出，这里只做翻译与拼接；协议层不认识的状态一律按
+     * 「未安装」呈现——那是最保守、也最不可能误导人的结论。
+     *
+     * @param status - `list` 返回的 `vmControl` 字段。
+     * @param t - 当前语言的取词函数。
+     * @returns 状态文字。
+     */
+    function vmCompatText(status, t) {
+      if (status === null || status === undefined || typeof status !== 'object') return t('vmCompatUnavailable')
+      if (status.state === 'ready') return t('vmCompatReady').replace('{version}', String(status.version ?? '—'))
+      if (status.state === 'degraded') return t('vmCompatDegraded').replace('{version}', String(status.version ?? '—'))
+      if (status.state === 'incompatible') return t('vmCompatIncompatible')
+      if (status.state === 'disabled') return t('vmCompatDisabled')
+      return t('vmCompatUnavailable')
+    }
+
     /** 新增／编辑表单。 */
     function HostForm(props) {
       const t = useT()
@@ -697,9 +732,13 @@ window.__ModuleLoader__.load({
       // 否则切一次语言就会重新拉列表、重测所有主机（串行 SSH，代价很高）。
       const tRef = useRef(t)
       tRef.current = t
-      const [state, setState] = useState({ status: 'loading', hosts: [], error: '', keyMode: '', vaultDir: '', version: '' })
+      const [state, setState] = useState({
+        status: 'loading', hosts: [], error: '', keyMode: '', vaultDir: '', version: '', vmControl: null,
+      })
       const [form, setForm] = useState(null)
       const [tests, setTests] = useState({})
+      /** 「重新检查」按钮的进行中状态。 */
+      const [vmCheck, setVmCheck] = useState('idle')
       // 打开按钮的反馈必须留在按钮旁边：失败信息若只出现在页顶，点按钮的人看不到。
       const [openState, setOpenState] = useState({ status: 'idle', detail: '' })
       /** 每台主机的连通体检结果：alias -> { status, detail }。 */
@@ -715,11 +754,28 @@ window.__ModuleLoader__.load({
             keyMode: result.value.keyMode,
             vaultDir: result.value.vaultDir,
             version: result.value.version ?? '',
+            vmControl: result.value.vmControl ?? null,
           })
         } else {
-          setState({ status: 'ready', hosts: [], error: result.error, keyMode: '', vaultDir: '', version: '' })
+          setState({
+            status: 'ready', hosts: [], error: result.error, keyMode: '', vaultDir: '', version: '', vmControl: null,
+          })
         }
       }, [])
+
+      /**
+       * 重新探测虚拟机插件的兼容状态。
+       *
+       * 这条路径存在的意义就是「装完虚拟机插件不用重启」：Host 侧的状态有 TTL 缓存，
+       * 这里带 `refresh: true` 强制重新读目录与清单。
+       */
+      const recheckVm = async () => {
+        setVmCheck('checking')
+        const result = await call('vmStatus', { refresh: true }, tRef.current)
+        setVmCheck('idle')
+        if (result.ok) setState((current) => ({ ...current, vmControl: result.value }))
+        else setState((current) => ({ ...current, error: result.error }))
+      }
 
       useEffect(() => { load() }, [load])
 
@@ -816,7 +872,22 @@ window.__ModuleLoader__.load({
                     title: openState.detail,
                     style: { ...S.badText, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
                   }, openState.detail)
-                  : null))
+                  : null),
+              // 虚拟机联动是**可选项**：这一行只陈述事实，不提供任何会改变 SSH 配置的动作。
+              // 兼容层不可用时这里显示「未安装」，下面的主机管理完全不受影响。
+              state.vmControl === null
+                ? null
+                : h('div', { key: 'vm-compat', style: S.metaRow },
+                  h('span', null, t('vmCompat')),
+                  h('span', {
+                    style: { ...S.metaPath, flex: '0 1 auto' },
+                    title: typeof state.vmControl.message === 'string' ? state.vmControl.message : '',
+                  }, vmCompatText(state.vmControl, t)),
+                  h('button', {
+                    style: S.miniButton,
+                    disabled: vmCheck === 'checking',
+                    onClick: recheckVm,
+                  }, vmCheck === 'checking' ? t('vmCompatChecking') : t('vmCompatRecheck'))))
             : null),
         h('button', {
           'data-variant': 'primary',

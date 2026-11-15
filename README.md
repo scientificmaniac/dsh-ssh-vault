@@ -226,6 +226,7 @@ Behaviour is shaped by the following:
 | Timeouts | `ssh_run` defaults to 120s, adjustable, capped at 30 minutes; commands inside `/hosts` are fixed at 120s |
 | Health checks | Settings page and `/hosts` probe with a 15s timeout; the background sweep refreshes every 5 minutes |
 | Error log | **Off by default.** Turn it on with the “Error log” card at the bottom of the settings page (or `logging: true`) and tool and settings failures are written to `<vault>/logs/diagnostics.log`: with source and stack, rotated to `.1` past 512 KiB, and anything shaped like `password=…` replaced by `***`. The switch itself lives in `diagnostics.json` next to it, so it survives a restart. Use `logging: { enabled, dir, maxBytes }` to change the location or size |
+| VM integration | Enabled by default. Recognizes and validates `dsh-vm-control` and exposes `vmStatus` / `vmImport`; see “Compatibility with `dsh-vm-control`” below for the directory, alias policy and cache. `vmControl: false` or `vmControl.enabled: false` turns it off entirely |
 
 ## API and extension points
 
@@ -278,6 +279,8 @@ Mounted at `/ssh-vault` (`kind: 'prefix'`, **no trailing slash**). `POST` only, 
 | `/ssh-vault/setDiagnostics` | Turn the error log on / off (boolean `enabled` only) |
 | `/ssh-vault/clearDiagnostics` | Delete the log file and the in-memory buffer |
 | `/ssh-vault/openLogs` | Open the log directory in the system file manager |
+| `/ssh-vault/vmStatus` | Discovery result and contract check of the VM compatibility layer (`refresh: true` forces a probe) |
+| `/ssh-vault/vmImport` | Import one VM's SSH access details under the field whitelist and conflict policy |
 
 `openVault` and `openLogs` **accept no path argument at all** — they can only open the plugin's own directories.
 
@@ -286,6 +289,70 @@ Every request crosses the Host Connection trust fence **before** the handler loo
 ### About `ctx.systemPrompt.section`
 
 **This plugin does not use that extension point.** Every tool carries its own `description`, and no section is injected into the system prompt, so prompt length and ordering are unaffected.
+
+## Compatibility with `dsh-vm-control`
+
+`dsh-vm-control` is a separate plugin that sits next to this one (the `dsh-vm-control/` directory in this repository). It drives VMware VM power, snapshots and configuration, and offers a settings panel that imports a VM's SSH access details into the SSH vault. This plugin provides an **optional compatibility layer** on its side so that import path has an explicit contract, conflict semantics and a fallback when it fails.
+
+### What is in scope
+
+| Does | Does not |
+| --- | --- |
+| Recognize `<package root>/dsh-vm-control`, a sibling directory, a `-main` source checkout, and `vmControl.dir` / `DSH_VM_CONTROL_DIR` | Load or activate the other plugin, or call its `apply` |
+| Read the manifest, check the `>=1.0.0 <2.0.0` range, the entry exports (`name` / `apply` / `inject: ['tools']`), ESM and `engines.node` | Register any `vm_*` tool, `/vm-control` route or `/vm` command |
+| Expose `POST /ssh-vault/vmStatus` and `POST /ssh-vault/vmImport` | Query VMware Tools or guest IPs on the VM side |
+| Write whitelisted fields into this plugin's own encrypted vault | Expose the vault key, ciphertext format or passwords |
+| Detect alias conflicts, offer suffix and explicit-overwrite policies | Rewrite the other plugin's source, data directory or settings |
+
+**In one sentence**: this plugin accepts only the SSH fields the VM side has already assembled, and decides as the vault owner whether to write them. The other plugin's tools, routes and commands are still loaded by the host's own Loader line.
+
+### Load order and namespaces
+
+- Both plugins are activated by the host through their own `cordis.patch.yml`, in **any order**. The compatibility layer reads files only when first queried (lazy) and caches the result for 30 seconds; a miss is retried after 5 seconds, so installing the VM plugin after this one needs no DSH restart.
+- Namespaces are separated by prefix: `ssh_*` / `/ssh-vault` / `/hosts` / `ssh-vault` versus `vm_*` / `/vm-control` / `/vm` / `vm-control`. The compatibility layer never takes the other plugin's names, so loading both cannot produce “tool already exists”.
+- Several copies of the same plugin are reported as a `duplicate-install` warning (the state degrades to `degraded`, import still works) and the copy actually in use is named explicitly.
+
+### When recognition fails
+
+| State | Meaning | Import endpoint |
+| --- | --- | --- |
+| `ready` | Directory, version and entry exports all match the contract | Available |
+| `degraded` | Available with warnings (duplicate copies, missing optional services) | Available, result carries `warnings` |
+| `unavailable` | Not found, or the configured directory is missing / named differently | `compat-unavailable`, with the paths checked and the manual fallback |
+| `incompatible` | Found, but the version is out of range, `apply` is missing, `inject` lacks `tools`, the module failed to import, … | `compat-incompatible`, with the concrete reason |
+| `disabled` | `vmControl.enabled: false` | `compat-disabled` |
+
+In every state `ssh_hosts` / `ssh_run` / `ssh_transfer` / `ssh_probe` / `ssh_tunnel` / `/hosts` / the settings page / the existing `/ssh-vault/save` are unaffected. A compatibility failure never escapes into `apply` and never blocks startup.
+
+### Imported fields and conflict semantics
+
+`vmImport` accepts only these fields (anything else is ignored): `alias`, `host`, `port`, `username`, `shell`, `description`, `tags`, `authType`, `password`, `privateKeyPath`, `passphrase`, plus the layer's own `vmx` (VM identity), `aliasPolicy` and `confirm`. `sudoPassword`, `credentialRef`, `bindAddress` and private-key uploads are **out of scope**: those are decisions the user makes in the host edit form.
+
+`aliasPolicy` has three values:
+
+| Value | Behaviour |
+| --- | --- |
+| `reuse` (default) | If the target alias is taken by a different VM, **refuse** with `alias-conflict`; `details.suggestions` offers `-2` / `-3` candidates |
+| `suffix` | Pick the first free suffix and explain it in `warnings` |
+| `overwrite` | Requires `confirm: true` in the request (and `vmControl.allowOverwrite` not `false`); on success the old record's `sudoPassword` / `credentialRef` / `bindAddress` are **not** inherited, and a record of the same VM under its previous alias is removed |
+
+Re-importing the same VM (same `vmx`, same alias) **updates**; importing it under a new alias returns `already-imported` with the existing alias, so one machine never ends up with two entry points in the vault.
+
+### Configuration
+
+```yaml
+vmControl:
+  enabled: true          # false puts the compatibility layer fully to sleep
+  dir: ''                # explicit plugin directory; when set it is exclusive
+  searchRoots: []        # extra roots (the same-named directory is looked up under each)
+  aliasPolicy: reuse     # reuse | suffix | overwrite
+  allowOverwrite: true   # overwrite still requires confirm: true in the request
+  cacheTtlMs: 30000      # cache lifetime after a hit
+  retryTtlMs: 5000       # retry interval while missing / incompatible
+  probeModule: true      # import() the entry module to check its exports
+```
+
+The `DSH_VM_CONTROL_DIR` environment variable is equivalent to `vmControl.dir` (configuration wins).
 
 ## Lifecycle
 

@@ -8,6 +8,24 @@ All notable changes to this project are documented here. The format follows
 
 
 
+## [2.4.0] - 2026-11-15
+
+### Added
+
+- **A compatibility layer for `dsh-vm-control`**: it recognizes the VM plugin in the same directory (or through `vmControl.dir` / `DSH_VM_CONTROL_DIR`) and checks its package name, `>=1.0.0 <2.0.0` version range, ESM shape, `engines.node`, and entry exports (`name` / `apply` / `inject: ['tools']`) — but **never activates** it. No `vm_*` tool, `/vm-control` route or `/vm` command is registered, so loading both plugins cannot collide and the load order does not matter.
+- Two new settings actions, `POST /ssh-vault/vmStatus` and `POST /ssh-vault/vmImport`: the first reports discovery, contract problems and service availability; the second writes a VM's SSH access details into the vault under a field whitelist.
+- Import conflict semantics: `reuse` (default: refuse and offer candidate aliases), `suffix` (avoid the clash automatically), `overwrite` (requires `confirm: true` and does not inherit the old record's sudo password, credential reference or bind address). Re-importing the same VM (`vmx`) updates it; importing it under a new alias returns `already-imported`.
+- A "VM integration" row in the settings page showing the recognition state with a "Re-check" button, so installing the VM plugin needs no DSH restart.
+- Missing optional services (`webServer` / `commands` / `settings`) are reported as hints only; several copies of the same plugin produce a `duplicate-install` warning that names the copy actually in use.
+
+### Changed
+
+- The `list` response gains an additive `vmControl` field (compatibility state); every existing field and shape is unchanged.
+
+### Notes
+
+- A compatibility failure only affects `vmStatus` / `vmImport`: the tools, `/hosts`, the settings page and the existing `/ssh-vault/save` are unaffected; `vmControl: false` turns the layer off entirely.
+
 ## [2.3.0] - 2026-11-13
 
 ### Added

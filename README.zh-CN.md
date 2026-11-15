@@ -226,6 +226,7 @@ flowchart TB
 | 超时 | `ssh_run` 默认 120 秒，可调，上限 30 分钟；`/hosts` 内的命令固定 120 秒 |
 | 连通性体检 | 设置页与 `/hosts` 用 15 秒探测超时；后台每 5 分钟刷新缓存 |
 | 诊断日志 | **默认关闭**。开启后（设置页底部「错误日志」卡片，或配置 `logging: true`）把工具与设置接口的报错写进 `<保险库目录>/logs/diagnostics.log`：带来源与堆栈、超过 512 KiB 轮转为 `.1`、形如 `password=…` 的口令字段自动替换成 `***`。开关状态保存在同目录的 `diagnostics.json`，重启后保持。需要改位置或大小写 `logging: { enabled, dir, maxBytes }` |
+| 虚拟机联动 | 默认启用。识别并校验 `dsh-vm-control`，提供 `vmStatus` / `vmImport` 两个接口；目录、别名策略与缓存见下文「与 `dsh-vm-control` 的兼容」。`vmControl: false` 或 `vmControl.enabled: false` 可完全关闭 |
 
 ## API 与扩展点
 
@@ -278,6 +279,8 @@ flowchart TB
 | `/ssh-vault/setDiagnostics` | 开 / 关诊断日志（只接受布尔 `enabled`） |
 | `/ssh-vault/clearDiagnostics` | 清空日志文件与内存缓冲 |
 | `/ssh-vault/openLogs` | 用系统文件管理器打开日志目录 |
+| `/ssh-vault/vmStatus` | 虚拟机兼容层的发现结果与契约校验（`refresh: true` 强制重新探测） |
+| `/ssh-vault/vmImport` | 按白名单与冲突策略导入一台虚拟机的 SSH 接入信息 |
 
 `openVault` 与 `openLogs` **不接受任何路径参数**，只能打开插件自己的目录。
 
@@ -286,6 +289,70 @@ flowchart TB
 ### 关于 `ctx.systemPrompt.section`
 
 **本插件未使用该扩展点。** 工具都在定义里自带 `description`，没有向系统提示词注入任何段落，因此不影响提示词长度或顺序。
+
+## 与 `dsh-vm-control` 的兼容
+
+`dsh-vm-control` 是并排放置的另一个插件（本仓库的 `dsh-vm-control/` 目录）。它负责 VMware 虚拟机的电源、快照与配置，并提供一个「把虚拟机的 SSH 接入信息导入 SSH 保险库」的设置面板。本插件在这一侧提供**可选的兼容层**，让这条导入路径有明确的契约、冲突语义与失败降级。
+
+### 兼容范围
+
+| 做 | 不做 |
+| --- | --- |
+| 识别 `<包根>/dsh-vm-control`、相邻目录、`-main` 源码检出，以及 `vmControl.dir` / `DSH_VM_CONTROL_DIR` | 不加载、不激活对方插件，也不调用它的 `apply` |
+| 读清单、校验版本区间 `>=1.0.0 <2.0.0`、入口导出（`name` / `apply` / `inject: ['tools']`）、ESM 与 `engines.node` | 不注册 `vm_*` 工具、`/vm-control` 路由或 `/vm` 命令 |
+| 提供 `POST /ssh-vault/vmStatus` 与 `POST /ssh-vault/vmImport` | 不代替虚拟机侧探测 VMware Tools 或客户机 IP |
+| 把白名单字段写进本插件自己的加密保险库 | 不向外暴露保险库密钥、密文格式或口令 |
+| 检测别名冲突，提供后缀与显式覆盖策略 | 不改写对方的源码、数据目录或设置 |
+
+**边界一句话**：本插件只承认对方「整理好的 SSH 字段」，并以保险库主人的身份决定是否写入；对方的工具、路由与命令仍由宿主自己的 Loader 行加载。
+
+### 加载顺序与命名空间
+
+- 两边都由宿主按各自的 `cordis.patch.yml` 激活，**顺序无关**。兼容层第一次被查询时才读文件（惰性），结果缓存 30 秒；未找到时 5 秒后即可重试，因此「先装 SSH、后装虚拟机」不需要重启 DSH。
+- 命名空间按前缀隔离：`ssh_*` / `/ssh-vault` / `/hosts` / `ssh-vault` 对 `vm_*` / `/vm-control` / `/vm` / `vm-control`。兼容层从不占用对方的名字，宿主同时加载两者不会出现「工具已存在」。
+- 同一插件的多份副本被识别为 `duplicate-install` 警告（状态降级为 `degraded`，仍可导入），并明确列出实际使用的那一份。
+
+### 识别失败的处置
+
+| 状态 | 含义 | 导入接口 |
+| --- | --- | --- |
+| `ready` | 目录、版本、入口导出都符合契约 | 可用 |
+| `degraded` | 可用，但有警告（多副本、可选服务缺失等） | 可用，结果带 `warnings` |
+| `unavailable` | 没找到；或显式目录不存在 / 包名不符 | `compat-unavailable`，附已检查路径与手工添加的降级方式 |
+| `incompatible` | 找到了，但版本越界、入口缺 `apply`、`inject` 缺 `tools`、模块 import 失败等 | `compat-incompatible`，附具体原因 |
+| `disabled` | `vmControl.enabled: false` | `compat-disabled` |
+
+无论哪种状态，`ssh_hosts` / `ssh_run` / `ssh_transfer` / `ssh_probe` / `ssh_tunnel` / `/hosts` / 设置页 / 原来的 `/ssh-vault/save` 都不受影响。兼容层失败不会抛到 `apply`，也不会阻止插件启动。
+
+### 导入的字段与冲突语义
+
+`vmImport` 只接受这些字段（其余忽略）：`alias`、`host`、`port`、`username`、`shell`、`description`、`tags`、`authType`、`password`、`privateKeyPath`、`passphrase`，外加兼容层自用的 `vmx`（虚拟机身份）、`aliasPolicy`、`confirm`。`sudoPassword`、`credentialRef`、`bindAddress` 与私钥上传**不在范围内**——那些需要用户在主机编辑表单里决定。
+
+`aliasPolicy` 三种取值：
+
+| 值 | 行为 |
+| --- | --- |
+| `reuse`（默认） | 目标别名已被占用且不是同一台虚拟机时**拒绝**，返回 `alias-conflict`，`details.suggestions` 给出 `-2` / `-3` 候选 |
+| `suffix` | 自动改用第一个可用后缀，并在 `warnings` 里说明 |
+| `overwrite` | 需要请求带 `confirm: true`（且 `vmControl.allowOverwrite` 不为 `false`）；成功后**不继承**旧记录的 `sudoPassword` / `credentialRef` / `bindAddress`，并删除同一台虚拟机挂在旧别名下的记录 |
+
+同一台虚拟机（`vmx` 相同、别名相同）重复导入是**更新**而不是新增；换别名再导入会得到 `already-imported` 与既有别名，避免一台机器在保险库里出现两个入口。
+
+### 配置
+
+```yaml
+vmControl:
+  enabled: true          # false 时兼容层完全休眠
+  dir: ''                # 显式插件目录；设置后排他，不再探测其它副本
+  searchRoots: []        # 额外搜索根（每个根下找同名目录）
+  aliasPolicy: reuse     # reuse | suffix | overwrite
+  allowOverwrite: true   # overwrite 仍要求请求带 confirm: true
+  cacheTtlMs: 30000      # 命中后的缓存时长
+  retryTtlMs: 5000       # 未找到 / 不兼容时的重试间隔
+  probeModule: true      # 是否 import() 入口模块校验导出
+```
+
+环境变量 `DSH_VM_CONTROL_DIR` 与 `vmControl.dir` 等价（配置优先）。
 
 ## 生命周期
 
